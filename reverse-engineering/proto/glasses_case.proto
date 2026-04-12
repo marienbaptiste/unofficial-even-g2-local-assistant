@@ -65,14 +65,9 @@ message ModuleConfigureDataPackage {
 }
 
 // ============================================
-// Onboarding Service
+// Onboarding Service (0x10)
 // ============================================
-// Source: eOnboardingCommandId enum
-
-message OnboardingDataPackage {
-  uint32 command_id = 1;      // [INFERRED]
-  // Onboarding flow steps — TBD
-}
+// MOVED to g2_setting.proto — confirmed: cmd=1, field3={processId=4} to skip onboarding
 
 // ============================================
 // Logger Service

@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:even_g2_sdk/even_g2_sdk.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'test_tab.dart';
 
 void main() => runApp(const G2App());
 
@@ -24,9 +26,10 @@ class G2Page extends StatefulWidget {
   State<G2Page> createState() => _G2PageState();
 }
 
-class _G2PageState extends State<G2Page> {
+class _G2PageState extends State<G2Page> with SingleTickerProviderStateMixin {
   final _g2 = EvenG2();
   final _textCtrl = TextEditingController(text: 'Hello from Flutter!');
+  late final TabController _tabCtrl = TabController(length: 2, vsync: this);
 
   // State
   String _phase = 'disconnected'; // disconnected, connecting, conversate
@@ -36,12 +39,36 @@ class _G2PageState extends State<G2Page> {
   final List<String> _finalizedLines = [];
   DateTime _lastDisplayUpdate = DateTime.now();
 
+  // Pre-connection mode: 'conversate' or 'even_ai'
+  String _mode = 'conversate';
+
+  // Even AI session state
+  StreamSubscription? _wakeSub;
+  bool _aiSessionActive = false;
+  Timer? _dashboardHeartbeatTimer;
+
   // Service health
   static const _voiceUrl = 'http://localhost:8081';
   static const _voiceWsUrl = 'ws://localhost:8081';
   static const _openclawUrl = 'http://localhost:18789';
-  static const _openclawToken = String.fromEnvironment('OPENCLAW_TOKEN',
-      defaultValue: ''); // Set via --dart-define=OPENCLAW_TOKEN=your_token
+  static final _openclawToken = _loadOpenClawToken();
+
+  static String _loadOpenClawToken() {
+    // --dart-define takes priority
+    const envToken = String.fromEnvironment('OPENCLAW_TOKEN', defaultValue: '');
+    if (envToken.isNotEmpty) return envToken;
+    // Auto-detect from ~/.openclaw/openclaw.json
+    try {
+      final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
+      final f = File('$home/.openclaw/openclaw.json');
+      if (f.existsSync()) {
+        final data = jsonDecode(f.readAsStringSync());
+        final token = data['gateway']?['auth']?['token'];
+        if (token is String && token.isNotEmpty) return token;
+      }
+    } catch (_) {}
+    return '';
+  }
   bool _whisperOnline = false;
   bool _whisperModelLoaded = false;
   bool _openclawOnline = false;
@@ -76,10 +103,13 @@ class _G2PageState extends State<G2Page> {
 
   @override
   void dispose() {
+    _tabCtrl.dispose();
     _healthTimer?.cancel();
     _connSub?.cancel();
     _levelSub?.cancel();
     _micSub?.cancel();
+    _wakeSub?.cancel();
+    _dashboardHeartbeatTimer?.cancel();
     _disconnectVoice();
     _textCtrl.dispose();
     _g2.dispose();
@@ -133,30 +163,13 @@ class _G2PageState extends State<G2Page> {
       if (data['segments'] != null) {
         final segments = data['segments'] as List;
         if (segments.isEmpty) return;
-        // WhisperLive sends all segments each time — only take the last one
         final text = segments.last['text'].toString().trim();
         final isPartial = data['partial'] == true;
         if (text.isNotEmpty) {
-          if (isPartial) {
-            setState(() => _currentPartial = text);
-            // Throttle partial updates to glasses (max every 500ms)
-            final now = DateTime.now();
-            if (now.difference(_lastDisplayUpdate).inMilliseconds > 500) {
-              _lastDisplayUpdate = now;
-              _safeDisplay(text, isFinal: false);
-            }
+          if (_mode == 'even_ai') {
+            _handleEvenAiTranscript(text, isPartial: isPartial);
           } else {
-            _finalizedLines.add(text);
-            if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
-            setState(() => _currentPartial = '');
-            // Only show the last 3 finalized lines on glasses
-            final recent = _finalizedLines.length > 3
-                ? _finalizedLines.sublist(_finalizedLines.length - 3)
-                : _finalizedLines;
-            _safeDisplay(recent.join('\n'), isFinal: true);
-
-            // Send finalized text to OpenClaw for AI response
-            _sendToOpenClaw(text);
+            _handleConversateTranscript(text, isPartial: isPartial);
           }
         }
       }
@@ -189,14 +202,131 @@ class _G2PageState extends State<G2Page> {
     _ws = null;
   }
 
-  // -- OpenClaw AI --
+  // -- Transcript handlers --
+
+  void _handleConversateTranscript(String text, {required bool isPartial}) {
+    if (isPartial) {
+      setState(() => _currentPartial = text);
+      final now = DateTime.now();
+      if (now.difference(_lastDisplayUpdate).inMilliseconds > 500) {
+        _lastDisplayUpdate = now;
+        _safeDisplay(text, isFinal: false);
+      }
+    } else {
+      _finalizedLines.add(text);
+      if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
+      setState(() => _currentPartial = '');
+      final recent = _finalizedLines.length > 3
+          ? _finalizedLines.sublist(_finalizedLines.length - 3)
+          : _finalizedLines;
+      _safeDisplay(recent.join('\n'), isFinal: true);
+      _sendToOpenClaw(text);
+    }
+  }
+
+  void _handleEvenAiTranscript(String text, {required bool isPartial}) {
+    if (isPartial) {
+      setState(() => _currentPartial = text);
+      // Show live transcription on glasses via Dashboard
+      final now = DateTime.now();
+      if (now.difference(_lastDisplayUpdate).inMilliseconds > 500) {
+        _lastDisplayUpdate = now;
+        try {
+          _g2.dashboard.sendTranscription(text);
+        } catch (_) {}
+      }
+    } else {
+      _finalizedLines.add(text);
+      if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
+      setState(() => _currentPartial = '');
+      // Final transcription + AI response via Dashboard flow
+      _runEvenAiResponse(text);
+    }
+  }
+
+  Future<void> _runEvenAiResponse(String transcript) async {
+    if (!_openclawOnline || _aiProcessing) return;
+
+    _aiHistory.add({'role': 'user', 'content': 'This is a question that expects always an answer: $transcript'});
+    while (_aiHistory.length > 20) _aiHistory.removeAt(0);
+
+    _aiProcessing = true;
+    setState(() => _status = 'Even AI: thinking...');
+
+    try {
+      // Signal transcription done + show thinking on glasses
+      await _g2.dashboard.transcriptionDone();
+      await Future.delayed(const Duration(milliseconds: 100));
+      await _g2.dashboard.showThinking();
+
+      final messages = [
+        {'role': 'system', 'content': 'You are a personal AI assistant on smart glasses. '
+            'You receive live transcripts of what the wearer says. '
+            'ALWAYS respond to every message. '
+            'Prefix responses with [AI]. Keep under 3 sentences.'},
+        ..._aiHistory,
+      ];
+
+      final resp = await http.post(
+        Uri.parse('$_openclawUrl/v1/chat/completions'),
+        headers: {
+          'Authorization': 'Bearer $_openclawToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'model': 'openclaw', 'messages': messages}),
+      ).timeout(const Duration(seconds: 15));
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        final content = data['choices']?[0]?['message']?['content']?.toString().trim() ?? '';
+
+        if (content.isNotEmpty && content != '[SILENT]' && !content.contains('[SILENT]')) {
+          _aiHistory.add({'role': 'assistant', 'content': content});
+          // Stream AI response via Dashboard protocol
+          await _g2.dashboard.streamResponse(content);
+          await Future.delayed(const Duration(milliseconds: 100));
+          await _g2.dashboard.streamResponseDone();
+          setState(() {
+            _finalizedLines.add(content);
+            if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
+            _status = 'Even AI: ready';
+          });
+        } else {
+          setState(() => _status = 'Even AI: ready');
+        }
+      }
+    } catch (e) {
+      debugPrint('Even AI error: $e');
+      setState(() => _status = 'Even AI: error');
+    } finally {
+      _aiProcessing = false;
+      _endEvenAiSession();
+    }
+  }
+
+  void _endEvenAiSession() {
+    _dashboardHeartbeatTimer?.cancel();
+    _dashboardHeartbeatTimer = null;
+    _levelSub?.cancel();
+    _levelSub = null;
+    _disconnectVoice();
+    if (_g2.mic.isActive) _g2.mic.stop().catchError((_) => <Uint8List>[]);
+    // End session on glasses — return to idle
+    try { _g2.dashboard.endSession(); } catch (_) {}
+    _aiSessionActive = false;
+    setState(() {
+      _vuLevel = 0;
+      _currentPartial = '';
+      _status = 'Even AI: listening for "Hey Even"...';
+    });
+  }
+
+  // -- OpenClaw AI (Conversate mode) --
 
   Future<void> _sendToOpenClaw(String transcript) async {
     if (!_openclawOnline || _aiProcessing) return;
 
-    // Add to conversation history
     _aiHistory.add({'role': 'user', 'content': transcript});
-    // Keep last 20 messages for context
     while (_aiHistory.length > 20) _aiHistory.removeAt(0);
 
     _aiProcessing = true;
@@ -225,9 +355,7 @@ class _G2PageState extends State<G2Page> {
         final content = data['choices']?[0]?['message']?['content']?.toString().trim() ?? '';
 
         if (content.isNotEmpty && content != '[SILENT]' && !content.contains('[SILENT]')) {
-          // AI wants to respond — show on glasses and in chat
           _aiHistory.add({'role': 'assistant', 'content': content});
-          // Show as regular text on glasses (more reliable than AI card)
           _safeDisplay(content, isFinal: true);
           setState(() {
             _finalizedLines.add(content);
@@ -248,34 +376,88 @@ class _G2PageState extends State<G2Page> {
     setState(() { _phase = 'connecting'; _status = 'Scanning...'; });
     try {
       await _g2.connectToNearest();
-      setState(() { _status = 'Entering Conversate...'; });
 
-      await _g2.display.show('Connected');
+      if (_mode == 'even_ai') {
+        // Even AI: listen for "Hey Even" wake word via clean SDK stream
+        _wakeSub = _g2.dashboard.onWake.listen((event) {
+          debugPrint('Hey Even wake: $event');
+          setState(() => _finalizedLines.add('>>> Hey Even detected'));
+          _onEvenAiWake();
+        });
 
-      await _g2.mic.start();
+        setState(() {
+          _phase = 'conversate';
+          _status = 'Even AI: listening for "Hey Even"...';
+          _aiSessionActive = false;
+        });
+      } else {
+        await _g2.display.show('Connected');
+        // Conversate: start mic + Whisper immediately
+        await _g2.mic.start();
 
-      // VU meter
+        _levelSub = _g2.mic.levelStream.listen((level) {
+          setState(() => _vuLevel = level);
+        });
+
+        _connectVoice();
+
+        _micSub = _g2.mic.packetStream.listen((packet) {
+          _ws?.sink.add(packet);
+        });
+
+        setState(() {
+          _phase = 'conversate';
+          _status = 'Streaming to Whisper';
+        });
+      }
+    } catch (e) {
+      setState(() { _phase = 'disconnected'; _status = 'Error: $e'; });
+    }
+  }
+
+  /// Called when glasses send "Hey Even" wake word event.
+  Future<void> _onEvenAiWake() async {
+    if (_aiSessionActive) return;
+    _aiSessionActive = true;
+
+    setState(() => _status = 'Even AI: wake detected, starting session...');
+
+    try {
+      // 1. Acknowledge wake (sends config + boundary + listening)
+      await _g2.dashboard.ackWake();
+
+      // 2. Start mic (raw mode — skip Conversate init to avoid kicking out of Dashboard)
+      await _g2.mic.start(raw: true);
       _levelSub = _g2.mic.levelStream.listen((level) {
         setState(() => _vuLevel = level);
       });
-
-      // Connect to voice service and stream mic audio
       _connectVoice();
-
-      // Forward raw LC3 BLE packets to voice service
       _micSub = _g2.mic.packetStream.listen((packet) {
         _ws?.sink.add(packet);
       });
 
-      setState(() { _phase = 'conversate'; _status = 'Streaming to Whisper'; });
+      // 3. Keep session alive with heartbeats
+      _dashboardHeartbeatTimer = Timer.periodic(
+        const Duration(seconds: 5),
+        (_) => _g2.dashboard.heartbeat().catchError((_) {}),
+      );
+
+      setState(() => _status = 'Even AI: listening...');
     } catch (e) {
-      setState(() { _phase = 'disconnected'; _status = 'Error: $e'; });
+      debugPrint('Even AI wake error: $e');
+      _aiSessionActive = false;
+      setState(() => _status = 'Even AI: wake error — $e');
     }
   }
 
   Future<void> _disconnect() async {
     _levelSub?.cancel();
     _levelSub = null;
+    _wakeSub?.cancel();
+    _wakeSub = null;
+    _dashboardHeartbeatTimer?.cancel();
+    _dashboardHeartbeatTimer = null;
+    _aiSessionActive = false;
     _disconnectVoice();
     if (_g2.mic.isActive) await _g2.mic.stop();
     await _g2.disconnect();
@@ -327,6 +509,13 @@ class _G2PageState extends State<G2Page> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Even G2 Assistant'),
+        bottom: TabBar(
+          controller: _tabCtrl,
+          tabs: const [
+            Tab(text: 'Assistant'),
+            Tab(text: 'SDK Test'),
+          ],
+        ),
         actions: [
           _serviceIndicator('Whisper', _whisperOnline, _whisperModelLoaded),
           _serviceIndicator('OpenClaw', _openclawOnline, _openclawOnline),
@@ -348,10 +537,16 @@ class _G2PageState extends State<G2Page> {
           ),
         ],
       ),
-      body: Row(
+      body: TabBarView(
+        controller: _tabCtrl,
         children: [
-          Expanded(child: _buildContent()),
-          if (_phase == 'conversate') _buildVuMeter(),
+          Row(
+            children: [
+              Expanded(child: _buildContent()),
+              if (_phase == 'conversate') _buildVuMeter(),
+            ],
+          ),
+          TestTab(g2: _g2),
         ],
       ),
     );
@@ -379,6 +574,17 @@ class _G2PageState extends State<G2Page> {
     );
   }
 
+  Widget _serviceChip(String label, bool online) {
+    return Chip(
+      avatar: Container(
+        width: 8, height: 8,
+        decoration: BoxDecoration(shape: BoxShape.circle, color: online ? Colors.green : Colors.red),
+      ),
+      label: Text(label, style: const TextStyle(fontSize: 12)),
+      visualDensity: VisualDensity.compact,
+    );
+  }
+
   Widget _buildContent() {
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -388,13 +594,58 @@ class _G2PageState extends State<G2Page> {
           Text(_status, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey)),
           const SizedBox(height: 16),
 
-          if (_phase == 'disconnected')
+          if (_phase == 'disconnected') ...[
+            // Mode selector
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Mode', style: Theme.of(context).textTheme.titleSmall),
+                    const SizedBox(height: 8),
+                    RadioListTile<String>(
+                      dense: true,
+                      title: const Text('Conversate'),
+                      subtitle: const Text('Always-on mic → Whisper → live transcription on glasses', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                      value: 'conversate',
+                      groupValue: _mode,
+                      onChanged: (v) => setState(() => _mode = v!),
+                    ),
+                    RadioListTile<String>(
+                      dense: true,
+                      title: const Text('Even AI'),
+                      subtitle: Text(
+                        'Mic → Whisper → OpenClaw (always answer) → Dashboard AI display'
+                        '${!_openclawOnline ? '\nOpenClaw offline!' : ''}',
+                        style: TextStyle(fontSize: 11, color: !_openclawOnline ? Colors.red : Colors.grey),
+                      ),
+                      value: 'even_ai',
+                      groupValue: _mode,
+                      onChanged: (v) => setState(() => _mode = v!),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            // Service status
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _serviceChip('Whisper', _whisperOnline && _whisperModelLoaded),
+                const SizedBox(width: 8),
+                _serviceChip('OpenClaw', _openclawOnline),
+              ],
+            ),
+            const SizedBox(height: 16),
             Center(child: ElevatedButton.icon(
               onPressed: _connect,
               icon: const Icon(Icons.bluetooth),
-              label: const Text('Connect'),
+              label: Text('Connect — ${_mode == 'even_ai' ? 'Even AI' : 'Conversate'}'),
               style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16)),
             )),
+          ],
 
           if (_phase == 'connecting')
             const Center(child: CircularProgressIndicator()),

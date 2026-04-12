@@ -4,8 +4,8 @@
 // Controls the G2 glasses microphone and receives LC3-encoded audio.
 //
 // Audio handle: 0x0864 (third BLE channel, UUID suffix 7402) -- CONFIRMED 2026-04-03
-// Audio control service: UNKNOWN — 0xC4 is NOT audio control (it's file transfer/notify_whitelist.json)
-// BLE: Audio data on handle 0x0864. Audio start/stop mechanism not yet captured.
+// Audio control: via EvenHub service 0xE0, Cmd=15, AudioCtrCmd{audio_func_en=1/0}
+// BLE: Audio data on handle 0x0864. Mic enabled/disabled via EvenHub AudioCtrCmd.
 //
 // CONFIRMED: Audio data on handle 0x0864 is NOT wrapped in G2 transport
 // protocol (no 0xAA header). Raw LC3 frames are sent directly.
@@ -29,38 +29,15 @@ syntax = "proto3";
 
 package even.g2.audio;
 
-// Audio control commands
-// Source: BLE capture analysis
-enum AudioCmd {
-  AUD_CMD_NONE = 0;
-  AUD_CMD_OPEN = 1;            // Start microphone capture
-  AUD_CMD_CLOSE = 2;           // Stop microphone capture
-  AUD_CMD_PAUSE = 3;           // Pause capture (keep session)
-  AUD_CMD_RESUME = 4;          // Resume paused capture
-}
-
-// Audio control command (phone -> glasses)
-// Source: BLE capture analysis
-// Packet type: APP_REQUEST_AUDIO_CTR_PACKET
-message AudioCtrCmd {
-  uint32 cmd = 1;              // [INFERRED - not yet captured] AudioCmd enum value
-  uint32 volume = 2;           // [INFERRED - not yet captured] Volume level
-  bool muted = 3;              // [INFERRED - not yet captured] Mute state
-}
-// NOTE: Audio control service ID is unknown. 0xC4 was initially suspected
-// but confirmed to be a file transfer service (sends user/notify_whitelist.json).
-// The audio stream on 0x0864 may start automatically during Conversate/AI sessions
-// without explicit audio control commands on the main channel.
-
-// Audio control response (glasses -> phone)
-// Source: BLE capture analysis
-// Packet type: OS_RESPONSE_AUDIO_CTR_PACKET
-// Result codes: APP_REQUEST_AUDIO_CTR_SUCCESS, APP_REQUEST_AUDIO_CTR_FAILED
-message AudioResCmd {
-  uint32 cmd = 1;              // [INFERRED - not yet captured] Echo of command
-  uint32 result = 2;           // [INFERRED - not yet captured] 0=success, 1=failed
-  uint32 err_code = 3;         // [INFERRED - not yet captured] Error code
-}
+// Audio control is done via EvenHub service (0xE0), Cmd=15, field 18:
+//   message AudioCtrCmd {
+//     int32 audio_func_en = 1;   // 1 = enable mic, 0 = disable mic
+//   }
+// See evenhub.proto for the full definition.
+//
+// CONFIRMED (2026-04-12): The mic start/stop command is EvenHub AudioCtrCmd,
+// NOT a separate audio service. The audio stream on handle 0x0864 begins
+// after sending AudioCtrCmd{audio_func_en=1} via EvenHub.
 
 // ============================================================
 // LC3 DECODING — nRF52840 Implementation

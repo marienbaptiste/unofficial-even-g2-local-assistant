@@ -8,9 +8,10 @@
 // BLE: Page commands on 5401, image data on 6401/6402, acks on 5402
 //
 // Display specs:
-//   - Width: ~267px
-//   - Color: 4-bit grayscale (16 levels)
-//   - Format: Compressed BMP
+//   - Total display area: 400x200 pixels (rendered as 4 quad tiles of 200x100)
+//   - Teleprompter width: 267px (text rendering mode)
+//   - Color: 4-bit indexed grayscale (16 levels)
+//   - Format: BMP with 118-byte header, bottom-up rows, padded to 4-byte boundary
 
 syntax = "proto3";
 
@@ -75,32 +76,14 @@ message DisplayRegion {
 //   APP_REQUEST_SHUTDOWN_PAGE_PACKET        — close/clear page
 //   OS_RESPONSE_SHUTDOWN_PAGE_PACKET        — ack shutdown
 
-// Image data update
-message ImageRawDataUpdate {
-  bytes data = 1;              // [INFERRED] BMP image data (4-bit grayscale)
-  uint32 data_len = 2;        // [INFERRED] Length
-  uint32 data_type = 3;       // [INFERRED] Format identifier
-}
-
-// Glasses response to image data
-message ResponseImageRawDataCmd {
-  uint32 result = 1;          // [INFERRED] Success/failure
-  uint32 err_code = 2;        // [INFERRED]
-}
-
-// Page rebuild container
-message RebuildPageContainer {
-  // Fields TBD
-}
-
-// Draw image command data
-message DrawImageData {
-  bytes image_data = 1;       // [INFERRED]
-  uint32 x = 2;               // [INFERRED] X position
-  uint32 y = 3;               // [INFERRED] Y position
-  uint32 width = 4;           // [INFERRED]
-  uint32 height = 5;          // [INFERRED]
-}
+// NOTE: Image/page lifecycle commands are now fully documented in evenhub.proto
+// The EvenHub service (0xE0) handles:
+//   Cmd=0: CreateStartUpPageContainer (text + image containers)
+//   Cmd=3: ImageRawDataUpdate (fragmented BMP push, 4096B chunks, 200ms delay)
+//   Cmd=5: TextContainerUpgrade (partial text update)
+//   Cmd=7: RebuildPageContainer (refresh page, same struct as create)
+//   Cmd=9: ShutDownContainer (close page)
+// See evenhub.proto for complete field definitions.
 
 // ============================================
 // File Service (for large image transfers)

@@ -1,142 +1,194 @@
-// Even Realities G2 — Even AI Service
-// Reconstructed from BLE protocol analysis
+// Even Realities G2 — Even AI Service (Voice Assistant)
+// Reconstructed from BLE capture analysis — 2026-04-12
 //
-// This is the core service for the custom AI assistant pipeline.
-// Handles wake word events, AI queries, and displaying AI responses.
+// Service ID: 0x07 [CONFIRMED]
+//   0x07-0x20 = phone->glasses commands
+//   0x07-0x00 = glasses->phone responses (ack/echo)
+//   0x07-0x01 = glasses->phone events (wake word, audio progress)
 //
-// Service ID: INFERRED (need BLE capture to confirm exact bytes)
-// BLE: Commands on 5401, responses/events on 5402
+// BLE: Commands on 5401 (handle 0x0842), responses/events on 5402 (handle 0x0844)
 //
-// TAG NUMBERS: Field numbers marked [CONFIRMED] come from BLE captures.
-// Fields marked [INFERRED] use conventional ordering — verify with BLE snoop.
+// TAG NUMBERS: All field numbers [CONFIRMED] from BLE capture capture_20260412_225605.
 
 syntax = "proto3";
 
 package even.g2.ai;
 
-// Command IDs for the Even AI service
-// Source: BLE capture analysis
-enum EvenAICommandId {
-  EVEN_AI_CMD_NONE = 0;
-  EVEN_AI_ENTER = 1;           // Start AI session
-  EVEN_AI_EXIT = 2;            // End AI session
-  EVEN_AI_WAKE_UP = 3;         // Wake word detected (glasses -> phone)
-  // Additional command IDs likely exist for each sub-message type
-  // Need BLE capture to enumerate all values
+// ============================================================
+// TOP-LEVEL MESSAGE
+// ============================================================
+
+// Every packet on service 0x07 uses this envelope.
+// The `type` field selects which payload field is populated.
+message EvenAIPacket {
+  uint32 type = 1;    // [CONFIRMED] Message type (see EvenAIType enum)
+  uint32 seq = 2;     // [CONFIRMED] Global sequence number, increments across all types
+
+  // Payload — one field per type. Field number = type + 2 for types 1-5.
+  VoiceState voice_state = 3;           // [CONFIRMED] type=1 — session lifecycle (wake/listen/end)
+  TranscriptionDone transcription_done = 4; // [CONFIRMED] type=2 — signals transcription complete
+  Transcription transcription = 5;      // [CONFIRMED] type=3 — live speech-to-text streaming
+  QuerySent query_sent = 6;             // [CONFIRMED] type=4 — query sent to AI backend
+  AIResponse ai_response = 7;          // [CONFIRMED] type=5 — AI response text chunks
+
+  // Gap: fields 8-9 likely exist for types 6-7 (unknown)
+
+  AudioEvent audio_event = 10;         // [CONFIRMED] type=8 — TTS audio playback events
+  ScrollControl scroll = 11;           // [CONFIRMED] type=9 — display scroll during AI response
+  // field 12 unknown
+  ConfigControl config = 13;           // [CONFIRMED] type=10 — initial config on session start
 }
 
-// Top-level data package for the Even AI service
-// Source: BLE capture analysis
-// All fields confirmed as existing via accessor methods (get:/set:)
-message EvenAIDataPackage {
-  uint32 command_id = 1;                    // [INFERRED] EvenAICommandId
-  EvenAIConfig config = 2;                  // [INFERRED] AI configuration
-  EvenAIControl ctrl = 3;                   // [INFERRED] Control (enter/exit/wakeup)
-  EvenAIReplyInfo reply_info = 4;           // [INFERRED] AI response text to display
-  EvenAIAskInfo ask_info = 5;               // [INFERRED] User's question/query
-  EvenAIAnalyseInfo analyse_info = 6;       // [INFERRED] Analysis data
-  EvenAIPromptInfo prompt_info = 7;         // [INFERRED] Prompt configuration
-  EvenAISkillInfo skill_info = 8;           // [INFERRED] Skill routing (navigate, translate, etc.)
-  EvenAIVADInfo vad_info = 9;               // [INFERRED] Voice Activity Detection info
-  EvenAIHeartbeat heartbeat = 10;           // [INFERRED] Keep-alive
-  EvenAIEvent event = 11;                   // [INFERRED] AI events
-  EvenAISentiment sentiment = 12;           // [INFERRED] Sentiment analysis data
-  EvenAICommRsp comm_rsp = 13;             // [INFERRED] Command response/ack
-}
-
-// AI session control
-message EvenAIControl {
-  uint32 action = 1;           // ENTER, EXIT, WAKE_UP
-  // Additional fields TBD from BLE capture
-}
-
-// AI response to display on glasses
-// This is the key message for sending custom AI responses
-// App method: ProtoAiExt|sendAIReplay
-message EvenAIReplyInfo {
-  string text = 1;             // [INFERRED] Response text (UTF-8)
-  bool is_final = 2;           // [INFERRED] Whether this is the final chunk
-  uint32 sequence = 3;         // [INFERRED] Sequence number for streaming
-  // Additional fields TBD
-}
-
-// User's spoken question (after STT)
-message EvenAIAskInfo {
-  string text = 1;             // [INFERRED] Transcribed question text
-  // Additional fields TBD
-}
-
-// AI configuration
-message EvenAIConfig {
-  string ai_model = 1;        // [INFERRED] AI model identifier
-  // agcConfig, speechEnhanceConfig found as related fields
-}
-
-// Analysis information
-message EvenAIAnalyseInfo {
-  // Fields TBD from BLE capture
-}
-
-// Prompt configuration
-message EvenAIPromptInfo {
-  // Fields TBD from BLE capture
-}
-
-// Skill routing (maps AI intents to device actions)
-message EvenAISkillInfo {
-  string skill_id = 1;        // [INFERRED] Skill identifier
-  // Skills include: navigate, translate, etc.
-}
-
-// Voice Activity Detection status
-message EvenAIVADInfo {
-  uint32 vad_status = 1;      // [INFERRED] VAD state
-}
-
-// Keep-alive heartbeat
-message EvenAIHeartbeat {
-  uint64 timestamp = 1;       // [INFERRED]
-}
-
-// AI-related events
-message EvenAIEvent {
-  // Fields TBD from BLE capture
-}
-
-// Sentiment analysis
-message EvenAISentiment {
-  // Fields TBD from BLE capture
-}
-
-// Command response / acknowledgment
-message EvenAICommRsp {
-  uint32 err_code = 1;        // [INFERRED] Error code (0 = success)
+// Message types observed in BLE captures
+enum EvenAIType {
+  EVEN_AI_TYPE_UNKNOWN = 0;
+  VOICE_STATE_TYPE = 1;          // [CONFIRMED] Session lifecycle events
+  TRANSCRIPTION_DONE_TYPE = 2;   // [CONFIRMED] End of transcription
+  TRANSCRIPTION_TYPE = 3;        // [CONFIRMED] Live transcription updates
+  QUERY_SENT_TYPE = 4;           // [CONFIRMED] Query dispatched to AI
+  AI_RESPONSE_TYPE = 5;          // [CONFIRMED] AI response text chunks
+  // 6, 7 — not observed
+  AUDIO_EVENT_TYPE = 8;          // [CONFIRMED] TTS audio progress (events only)
+  SCROLL_CONTROL_TYPE = 9;       // [CONFIRMED] Display scroll commands
+  CONFIG_TYPE = 10;              // [CONFIRMED] Configuration
 }
 
 // ============================================================
-// PROTOCOL FLOW — Custom AI Assistant on nRF52840
+// PAYLOAD MESSAGES
+// ============================================================
+
+// type=1: Voice session state changes
+// Sent as CMD (phone->glasses) and EVT (glasses->phone)
+message VoiceState {
+  uint32 state = 1;   // [CONFIRMED] See VoiceStateEnum
+}
+
+enum VoiceStateEnum {
+  VOICE_STATE_UNKNOWN = 0;
+  VOICE_STATE_LISTENING = 1;    // [CONFIRMED] Mic active, recording speech
+  // 2 = not observed in events, possibly PROCESSING
+  VOICE_STATE_BOUNDARY = 3;     // [CONFIRMED] Session start (wake word) or end (return to idle)
+}
+
+// type=2: Transcription complete signal
+// Phone->glasses after final transcription update
+message TranscriptionDone {
+  uint32 status = 1;   // [CONFIRMED] Observed: 1 = done
+}
+
+// type=3: Live speech-to-text transcription
+// Phone->glasses, progressive updates as user speaks
+// Text replaces previous update (full text each time, not deltas)
+message Transcription {
+  uint32 unknown1 = 1;    // [CONFIRMED] Always 0 in captures
+  uint32 unknown2 = 2;    // [CONFIRMED] Always 0 in captures
+  string text = 4;        // [CONFIRMED] Current transcription text (UTF-8)
+  // Note: field 3 not observed — may be language or confidence
+}
+
+// type=4: Query sent to AI backend
+// Phone->glasses, signals the AI is processing
+message QuerySent {
+  // [CONFIRMED] Empty payload — acts as a pure signal
+}
+
+// type=5: AI response text chunks
+// Phone->glasses, streamed in multiple packets
+message AIResponse {
+  uint32 unknown1 = 1;    // [CONFIRMED] Always 0 in captures
+  uint32 unknown2 = 2;    // [CONFIRMED] Always 0 in captures
+  string text = 4;        // [CONFIRMED] Response text chunk (UTF-8, may contain markdown **)
+  // field 3, 5 not observed
+  uint32 is_done = 6;     // [CONFIRMED] 0 = more chunks coming, 1 = final (empty text + done=1)
+}
+
+// type=8: TTS audio playback events (events only, glasses->phone)
+// Appears after AI response is fully sent, during audio playback
+message AudioEvent {
+  uint32 status = 1;   // [CONFIRMED] 2 = audio started, 1 = audio chunk/progress
+}
+
+// type=9: Display scroll control
+// Sent frequently during AI response display (phone->glasses)
+message ScrollControl {
+  uint32 value = 1;    // [CONFIRMED] Scroll parameter (observed values: 1)
+}
+
+// type=10: Configuration
+// Sent at beginning of session and on initial connect
+message ConfigControl {
+  uint32 param1 = 1;   // [CONFIRMED] Observed values vary (e.g., 0, other)
+  // Additional fields in 4-byte payloads not fully decoded
+}
+
+// ============================================================
+// PROTOCOL FLOW — "Hey Even" Full Interaction (CONFIRMED)
+// Captured: 2026-04-12 capture_20260412_225605
 // ============================================================
 //
-// 1. RECEIVING WAKE WORD EVENT:
-//    - Subscribe to 5402 notifications
-//    - Filter packets with Even AI service ID
-//    - Decode EvenAIDataPackage with command_id = EVEN_AI_WAKE_UP
+// PHASE 1: WAKE WORD DETECTION
+//   1. [EVT 0x07-0x01] type=1, VoiceState{state=3}
+//      Glasses detect "Hey Even" and fire BOUNDARY event
 //
-// 2. ACKNOWLEDGE WAKE-UP:
-//    - Build EvenAIControl { action = ACK/ENTER }
-//    - Wrap in EvenAIDataPackage { command_id = EVEN_AI_ENTER, ctrl = ... }
-//    - Serialize to protobuf, wrap in transport header, send on 5401
+//   2. [CMD 0x07-0x20] type=10, ConfigControl{...}
+//      Phone sends config to glasses (4-byte payload)
+//      [RSP 0x07-0x00] Glasses ack
 //
-// 3. CAPTURE AUDIO:
-//    - Audio stream starts automatically after wake-up ack
-//    - LC3 frames arrive on 5402 (or 7402 — needs confirmation)
-//    - Decode with liblc3: 10ms frames, 16kHz, 16-bit mono PCM
+//   3. [EVT 0x07-0x01] type=1, VoiceState{state=1}
+//      Glasses enter LISTENING state — mic is active
 //
-// 4. SEND AI RESPONSE:
-//    - Build EvenAIReplyInfo { text = "your response" }
-//    - Wrap in EvenAIDataPackage { command_id = REPLY, reply_info = ... }
-//    - Serialize + transport header + send on 5401
-//    - Glasses display the text
+//   4. [CMD 0x07-0x20] type=1, VoiceState{state=3}
+//      Phone acknowledges wake with BOUNDARY
+//      [RSP 0x07-0x00] Glasses ack
 //
-// 5. END SESSION:
-//    - Send EvenAIDataPackage { command_id = EVEN_AI_EXIT }
+//   5. [CMD 0x07-0x20] type=1, VoiceState{state=1}
+//      Phone confirms LISTENING mode
+//      [RSP 0x07-0x00] Glasses ack
+//
+// PHASE 2: SPEECH TRANSCRIPTION (streaming)
+//   Audio captured on mic, sent to phone, transcribed by cloud STT.
+//   Phone sends progressive updates to glasses display.
+//
+//   6. [CMD 0x07-0x20] type=3, Transcription{text="what is"}
+//   7. [CMD 0x07-0x20] type=3, Transcription{text="what is dump"}
+//   8. [CMD 0x07-0x20] type=3, Transcription{text="what is dominato right now"}
+//   9. [CMD 0x07-0x20] type=3, Transcription{text="What is Dominato right now in Geneva?"}
+//      Each gets [RSP 0x07-0x00] ack with empty payload
+//
+// PHASE 3: AI QUERY
+//  10. [CMD 0x07-0x20] type=2, TranscriptionDone{status=1}
+//      Signals end of transcription
+//
+//  11. [CMD 0x07-0x20] type=4, QuerySent{}
+//      Signals query dispatched to AI backend
+//
+// PHASE 4: AI RESPONSE (streaming)
+//  12. [CMD 0x07-0x20] type=5, AIResponse{text="Dominato is likely a reference to..."}
+//  13. [CMD 0x07-0x20] type=5, AIResponse{text=", which is located in the heart..."}
+//  14. [CMD 0x07-0x20] type=5, AIResponse{text=" management services for..."}
+//  15. [CMD 0x07-0x20] type=5, AIResponse{text=" service in Geneva where..."}
+//  16. [CMD 0x07-0x20] type=5, AIResponse{text="", is_done=1}
+//      Final empty chunk with done flag
+//
+// PHASE 5: TTS AUDIO PLAYBACK
+//  17. [EVT 0x07-0x01] type=8, AudioEvent{status=2}
+//      TTS audio playback starts
+//  18. [EVT 0x07-0x01] type=8, AudioEvent{status=1} (x20+)
+//      Audio progress events during playback
+//
+// PHASE 6: SCROLL (concurrent with phases 4-5)
+//      [CMD 0x07-0x20] type=9, ScrollControl{...} — many packets
+//      Display auto-scrolls through AI response text
+//
+// PHASE 7: SESSION END
+//  19. [EVT 0x07-0x01] type=1, VoiceState{state=3}
+//      Glasses return to IDLE — BOUNDARY event
+//  20. [CMD 0x07-0x20] type=1, VoiceState{state=3}
+//      Phone confirms session end
+//
+// NOTES:
+// - Audio (mic) streams on UUID 7402 (handle 0x0864), NOT on the transport channel
+// - TTS audio is played by the glasses; only events are sent over BLE
+// - Sequence numbers are global across all types within a session
+// - Every CMD gets a RSP ack (often with empty payload)
+// - The phone drives the entire flow; glasses just fire events

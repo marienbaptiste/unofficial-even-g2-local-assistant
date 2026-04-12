@@ -9,6 +9,7 @@ import 'protocol/audio.dart';
 import 'protocol/gestures.dart';
 import 'protocol/settings.dart';
 import 'protocol/evenhub.dart';
+import 'protocol/dashboard.dart';
 import 'models/g2_device.dart';
 import 'models/gesture_event.dart';
 import 'models/audio_frame.dart';
@@ -101,6 +102,12 @@ class EvenG2 {
 
   /// EvenHub controller — container-based display with touch events.
   late final G2Hub hub = G2Hub._(this);
+
+  /// Dashboard / AI session controller.
+  ///
+  /// Use to send live transcription, stream AI responses, and manage
+  /// the AI conversation flow on the glasses via service 0x07.
+  late final G2Dashboard dashboard = G2Dashboard._(this);
 
   // =========================================================================
   // Connection
@@ -249,16 +256,25 @@ class EvenG2 {
   // Heartbeat — keeps the BLE connection alive
   // ---------------------------------------------------------------------------
 
+  int _heartbeatCount = 0;
+
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    // Send heartbeat every 10 seconds (glasses timeout after ~30s idle)
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
+    _heartbeatCount = 0;
+    // Even app sends both heartbeats every 5s; battery poll every 10th tick (~50s)
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
       if (_transport.isConnected && _authenticated) {
         try {
+          // 1. EvenHub heartbeat (service 0xE0-0x20, cmd=12)
+          await _send(EvenHub.buildHubHeartbeat(_nextSeq(), _nextMsgId()));
+
+          // 2. DevSettings heartbeat (service 0x80-0x00, cmd=14)
           final payload = <int>[0x08, 0x0E, 0x10, ...Varint.encode(_nextMsgId()), 0x6A, 0x00];
           await _send(PacketBuilder.build(
             seq: _nextSeq(), serviceHi: 0x80, serviceLo: 0x00, payload: payload,
           ));
+
+          _heartbeatCount++;
         } catch (_) {
           // Connection may have dropped — will trigger reconnect
         }
@@ -352,6 +368,7 @@ class EvenG2 {
       _eventController.add(G2RawEvent(packet: packet));
       _gestureHandler.processPacket(packet);
       hub._processPacket(packet);
+      dashboard._processPacket(packet);
 
       // Complete any pending response waiter
       final key = '${packet.serviceHi}-${packet.serviceLo}';
@@ -388,6 +405,18 @@ class EvenG2 {
   int _nextSeq() => _seq++;
   int _nextMsgId() => _msgId++;
 
+  /// Send a raw pre-built packet for advanced/test usage.
+  Future<void> sendRaw(Uint8List data) {
+    _ensureConnected();
+    return _send(data);
+  }
+
+  /// Get the next sequence number for manual packet building.
+  int nextSeq() => _nextSeq();
+
+  /// Get the next message ID for manual packet building.
+  int nextMsgId() => _nextMsgId();
+
   void _ensureConnected() {
     if (!_transport.isConnected) {
       throw StateError('Not connected. Call connect() or connectToNearest() first.');
@@ -411,6 +440,8 @@ class EvenG2 {
     _micSubscription?.cancel();
     _audioHandler.dispose();
     _gestureHandler.dispose();
+    dashboard._dispose();
+    hub._dispose();
     _eventController.close();
     _transport.dispose();
   }
@@ -729,12 +760,19 @@ class G2Mic {
   /// // Audio is now streaming...
   /// final packets = await g2.mic.stop();
   /// ```
-  Future<void> start() async {
+  ///
+  /// Set [raw] to true to skip the Conversate display init — use this when
+  /// the mic is needed during a Dashboard AI session (Hey Even flow) where
+  /// Conversate mode would conflict.
+  Future<void> start({bool raw = false}) async {
     _g2._ensureConnected();
     if (_active) return;
 
-    // Conversate init is required to activate the mic on the glasses
-    await _g2.display._initConversate();
+    // Conversate init activates the mic in normal display mode.
+    // Skip it in raw mode (e.g. during Dashboard AI sessions).
+    if (!raw) {
+      await _g2.display._initConversate();
+    }
 
     _g2._audioHandler.resetCounter();
     _g2._micSubscription = _g2._transport.micStream.listen(_g2._audioHandler.processPacket);
@@ -956,7 +994,9 @@ class G2Hub {
 
   /// Process an incoming packet and emit events if applicable.
   void _processPacket(G2Packet packet) {
-    if (packet.serviceHi != 0x81 || packet.serviceLo != 0x20) return;
+    // EvenHub events come on service 0xE0 (confirmed) or 0x81 (legacy)
+    if (packet.serviceHi != 0xE0 && packet.serviceHi != 0x81) return;
+    if (packet.serviceLo != 0x00 && packet.serviceLo != 0x20) return;
 
     final event = EvenHub.parseEvent(packet.payload);
     if (event == null) return;
@@ -970,6 +1010,188 @@ class G2Hub {
   void _dispose() {
     _hubEventController.close();
     _imuController.close();
+  }
+}
+
+// =============================================================================
+// G2Dashboard — AI session controller
+// =============================================================================
+
+/// Controls the AI conversation flow on the glasses via Dashboard service 0x07.
+///
+/// Listens for "Hey Even" wake word events and provides a clean stream-based
+/// API. Handles the full protocol handshake (config + voice state acks).
+///
+/// ```dart
+/// // Listen for "Hey Even" wake word
+/// g2.dashboard.onWake.listen((_) async {
+///   // Acknowledge and start the session
+///   await g2.dashboard.ackWake();
+///
+///   // Start mic, run STT, stream transcription...
+///   await g2.dashboard.sendTranscription("What is the weather?");
+///   await g2.dashboard.transcriptionDone();
+///   await g2.dashboard.showThinking();
+///
+///   // Stream AI response
+///   await g2.dashboard.streamResponse("The weather today is sunny.");
+///   await g2.dashboard.streamResponseDone();
+///
+///   // End session
+///   await g2.dashboard.endSession();
+/// });
+/// ```
+class G2Dashboard {
+  final EvenG2 _g2;
+  final _wakeController = StreamController<EvenAiEvent>.broadcast();
+  final _eventController = StreamController<EvenAiEvent>.broadcast();
+
+  G2Dashboard._(this._g2);
+
+  // -----------------------------------------------------------------------
+  // Event streams
+  // -----------------------------------------------------------------------
+
+  /// Stream that fires when "Hey Even" wake word is detected.
+  ///
+  /// Only emits BOUNDARY voice state events (the actual wake word).
+  /// Call [ackWake] to acknowledge and start the AI session.
+  ///
+  /// ```dart
+  /// g2.dashboard.onWake.listen((event) {
+  ///   print('Hey Even detected!');
+  ///   g2.dashboard.ackWake();
+  /// });
+  /// ```
+  Stream<EvenAiEvent> get onWake => _wakeController.stream;
+
+  /// Stream of all AI events from the glasses (voice state, audio progress).
+  ///
+  /// For most use cases, prefer [onWake] which filters to just wake events.
+  Stream<EvenAiEvent> get onEvent => _eventController.stream;
+
+  // -----------------------------------------------------------------------
+  // Session lifecycle
+  // -----------------------------------------------------------------------
+
+  /// Acknowledge the wake word and start an AI session.
+  ///
+  /// Sends the full handshake sequence confirmed from BLE captures:
+  /// 1. Config (type=10)
+  /// 2. Voice state BOUNDARY (type=1, state=3) — acknowledge wake
+  /// 3. Voice state LISTENING (type=1, state=1) — confirm ready
+  ///
+  /// Call this immediately after receiving an [onWake] event.
+  Future<void> ackWake() async {
+    _g2._ensureConnected();
+    // 1. Send config
+    await _g2._send(Dashboard.buildConfig(_g2._nextSeq(), _g2._nextMsgId()));
+    await Future.delayed(const Duration(milliseconds: 50));
+    // 2. Acknowledge wake with BOUNDARY
+    await _g2._send(Dashboard.buildVoiceState(_g2._nextSeq(), _g2._nextMsgId(), Dashboard.stateBoundary));
+    await Future.delayed(const Duration(milliseconds: 50));
+    // 3. Confirm LISTENING
+    await _g2._send(Dashboard.buildVoiceState(_g2._nextSeq(), _g2._nextMsgId(), Dashboard.stateListening));
+  }
+
+  /// Send a live transcription update (type=3).
+  ///
+  /// Call repeatedly with the full text so far as the user speaks.
+  /// The glasses display the text in real-time.
+  Future<void> sendTranscription(String text) async {
+    _g2._ensureConnected();
+    await _g2._send(Dashboard.buildTranscription(_g2._nextSeq(), _g2._nextMsgId(), text));
+  }
+
+  /// Signal that transcription is complete (type=2).
+  ///
+  /// Call after the final [sendTranscription] update, before [showThinking].
+  Future<void> transcriptionDone() async {
+    _g2._ensureConnected();
+    await _g2._send(Dashboard.buildTranscriptionDone(_g2._nextSeq(), _g2._nextMsgId()));
+  }
+
+  /// Show the AI thinking indicator on the glasses (type=4).
+  ///
+  /// Call after [transcriptionDone], before [streamResponse].
+  Future<void> showThinking() async {
+    _g2._ensureConnected();
+    await _g2._send(Dashboard.buildAiThinking(_g2._nextSeq(), _g2._nextMsgId()));
+  }
+
+  /// Stream an AI response text chunk to the glasses (type=5).
+  ///
+  /// Call multiple times as the AI generates its response. Each chunk
+  /// is appended to the display. Call [streamResponseDone] after the last chunk.
+  Future<void> streamResponse(String text) async {
+    _g2._ensureConnected();
+    await _g2._send(Dashboard.buildAiResponse(_g2._nextSeq(), _g2._nextMsgId(), text));
+  }
+
+  /// Signal that the AI response is complete (type=5, is_done=1).
+  ///
+  /// Tells the glasses no more response chunks are coming.
+  Future<void> streamResponseDone() async {
+    _g2._ensureConnected();
+    await _g2._send(Dashboard.buildAiResponseDone(_g2._nextSeq(), _g2._nextMsgId()));
+  }
+
+  /// End the AI session (type=1, state=BOUNDARY).
+  ///
+  /// Signals the glasses to return to idle/dashboard mode.
+  /// Call after [streamResponseDone] or to abort a session.
+  Future<void> endSession() async {
+    _g2._ensureConnected();
+    await _g2._send(Dashboard.buildVoiceState(
+      _g2._nextSeq(), _g2._nextMsgId(), Dashboard.stateBoundary,
+    ));
+  }
+
+  /// Send a session heartbeat to keep the session alive (type=9).
+  Future<void> heartbeat() async {
+    _g2._ensureConnected();
+    await _g2._send(Dashboard.buildHeartbeat(_g2._nextSeq(), _g2._nextMsgId()));
+  }
+
+  // -----------------------------------------------------------------------
+  // Legacy aliases
+  // -----------------------------------------------------------------------
+
+  @Deprecated('Use ackWake() instead — now sends full handshake sequence')
+  Future<void> init() async {
+    _g2._ensureConnected();
+    await _g2._send(Dashboard.buildConfig(_g2._nextSeq(), _g2._nextMsgId()));
+  }
+
+  @Deprecated('Use heartbeat() instead')
+  Future<void> startSession() => heartbeat();
+
+  @Deprecated('Use transcriptionDone() instead')
+  Future<void> voiceDone() => transcriptionDone();
+
+  // -----------------------------------------------------------------------
+  // Internal
+  // -----------------------------------------------------------------------
+
+  /// Process an incoming packet and emit events if applicable.
+  void _processPacket(G2Packet packet) {
+    // Only care about 0x07-0x01 (event sub-service)
+    if (packet.serviceHi != 0x07 || packet.serviceLo != 0x01) return;
+
+    final event = Dashboard.parseEvent(packet.payload);
+    if (event == null) return;
+
+    _eventController.add(event);
+
+    // Emit on wake stream for BOUNDARY voice state events
+    if (event.isWake) {
+      _wakeController.add(event);
+    }
+  }
+
+  void _dispose() {
+    _wakeController.close();
+    _eventController.close();
   }
 }
 

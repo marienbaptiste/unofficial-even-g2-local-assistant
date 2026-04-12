@@ -26,22 +26,23 @@ python capture_server.py
 
 If port 8642 is already in use, the server is already running — just tell the user it's ready.
 
-Tell the user the UI is at **http://localhost:8642** and remind them to click "Done - Tell Claude" when the capture is complete.
+Tell the user the UI is at **http://localhost:8642**.
 
-## Step 2: Wait for the User's Signal (Ralph Wiggum Loop)
+## Step 2: Wait for the User
 
-Do NOT read old captures, progress.json, docs, or proto files while waiting. The user will signal when the capture is done via the web UI.
+Tell the user:
+> Capture UI is ready. Do your capture, then just tell me "done" when you're ready for analysis.
 
-**CRITICAL: To activate the polling loop, you MUST output a short message like "Waiting..." after telling the user the UI is ready.** This triggers the Stop hook (`check-signal.sh`) which polls `signal.json` every ~5 seconds. If the signal is not "done" yet, the hook returns `ok: false` which forces you to respond again — keeping the loop alive. When the signal says "done", the hook injects analysis instructions into your context.
+**Do NOT poll, loop, sleep, or use ScheduleWakeup.** Just stop and wait for the user to message you. The user will say "done" (or similar) when the capture is complete.
 
-Do NOT use ScheduleWakeup or `/loop` — the Stop hook handles the polling. Just say one short word each turn to keep the loop spinning.
+Do NOT read old captures, progress.json, docs, or proto files while waiting.
 
-## Step 3: Load Context and Analyze (AFTER capture is done)
+## Step 3: Load Context and Analyze (AFTER user says done)
 
-Only after the user signals "done" or explicitly asks for analysis:
+When the user tells you the capture is done:
 
 1. **First, read `reverse-engineering/progress.json`** to load all existing knowledge — discovered services, known protobuf patterns, previous capture notes. This is essential context for interpreting new packets.
-2. Read the capture results JSON from `reverse-engineering/tools/results/` matching the capture_id from the signal (or the latest result file).
+2. Find the latest capture result JSON from `reverse-engineering/tools/results/` (sort by modification time, skip progress.json).
 3. Cross-reference with relevant docs in `reverse-engineering/docs/` and proto files in `reverse-engineering/proto/` as needed.
 
 ### Web UI workflow (at http://localhost:8642)
@@ -58,32 +59,8 @@ Only after the user signals "done" or explicitly asks for analysis:
 - **Delta tab**: Compare with previous capture to see new/changed services
 - **Capture History**: View and reload any past capture
 - **Retry Analysis**: Button appears automatically when Stop & Analyze fails — retries without restarting the capture
-- **Notes & Signal to Claude**: Card below the capture card with:
-  - **Notes textarea**: User writes observations about what they saw on the glasses
-  - **"Done - Tell Claude"**: Writes a signal file so Claude knows the capture is ready for analysis
-  - **"Retrying Capture"**: Signals Claude that the user is re-doing the capture
-  - **"Save Notes Only"**: Attaches notes to the capture result without signaling
 
 Results are saved as JSON in `reverse-engineering/tools/results/` and capture logs in `reverse-engineering/tools/captures/`.
-
-### Signal file (Claude ↔ User communication)
-
-The web UI writes `reverse-engineering/tools/signal.json` when the user clicks Done or Retry.
-Claude should read this file to check the user's status:
-
-```python
-# signal.json format:
-{
-  "status": "done" | "retry",   # user's current state
-  "capture_id": "...",          # which capture to analyze
-  "notes": "...",               # user's observations
-  "timestamp": "..."
-}
-```
-
-After reading the signal, Claude should proceed accordingly:
-- `"done"` → read the capture results and user notes, begin analysis
-- `"retry"` → wait for the user to signal done again
 
 ### Alternative: Direct analyzer (for existing capture files)
 
@@ -158,6 +135,7 @@ Update these files with discoveries:
 - AI cards: field7.1=icon, field7.2=title, field7.3=body, field7.4=done
 - Settings: multiple services (0x09, 0x0D, 0x0E) with nested field structures
 - EvenHub (0xE0): type=0 createPage, type=3 imageUpdate, type=5 textUpdate, type=9 audioControl
+- Even AI (0x07): type=1 voiceState, type=3 transcription, type=5 aiResponse (field7), type=10 config
 
 ## Tone
 

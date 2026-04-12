@@ -36,3 +36,4 @@ export 'src/protocol/audio.dart' show Audio;
 export 'src/protocol/gestures.dart' show Gestures;
 export 'src/protocol/settings.dart' show Settings;
 export 'src/protocol/evenhub.dart' show EvenHub;
+export 'src/protocol/dashboard.dart' show Dashboard, EvenAiEvent, EvenAiEventType;

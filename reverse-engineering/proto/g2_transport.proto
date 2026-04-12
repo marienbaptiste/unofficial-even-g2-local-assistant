@@ -5,16 +5,23 @@
 // (NOT protobuf), then a protobuf payload inside.
 //
 // Binary transport format (NOT a protobuf message):
-//   [0xAA] [type] [seq] [len] [pkt_total] [pkt_serial] [svc_hi] [svc_lo] [protobuf_payload...] [crc_lo] [crc_hi]
+//   [0xAA] [routing] [syncID] [payloadLen] [totalPkts] [serialNum] [serviceID] [status] [protobuf_payload...] [crc_lo] [crc_hi]
 //
-//   - Magic byte: 0xAA (always)
-//   - Type: 0x21 = phone->glasses, 0x12 = glasses->phone
-//   - Seq: sequence number (wraps at 0xFF)
-//   - Len: payload length (after header, before CRC)
-//   - pkt_total: total packets in multi-packet message (usually 0x01)
-//   - pkt_serial: packet index in multi-packet (usually 0x01)
-//   - svc_hi, svc_lo: service ID (see ServiceId enum below)
-//   - CRC-16/CCITT: init=0xFFFF, poly=0x1021, over payload only, little-endian
+//   Offset 0: Header byte     = 0xAA (fixed)
+//   Offset 1: Routing         = (dest << 4) | source  [phone=1, glasses=2]
+//                                0x21 = phone->glasses, 0x12 = glasses->phone
+//   Offset 2: SyncID          = Incremented per logical message (wraps at 0xFF)
+//   Offset 3: PayloadLen      = Length of payload in this packet (+2 if last packet, for CRC)
+//   Offset 4: TotalPackets    = Total packets for this message
+//   Offset 5: SerialNum       = 1-indexed packet number within message
+//   Offset 6: ServiceID       = Service routing byte (see service map below)
+//   Offset 7: Status          = bit0=notify, bits1-4=resultCode, bit5=reserveFlag
+//
+//   Max payload per packet: 236 bytes
+//   Fragmentation: messages > 236B split across multiple packets
+//   Reassembly key: "{serviceId}-{syncId}"
+//   CRC16: only on LAST packet, appended as little-endian (PayloadLen includes +2 for CRC bytes)
+//   CRC16 algorithm: init=0xFFFF, custom polynomial (see capture_server analyzer)
 //
 // BLE Characteristics:
 //   Base UUID: 00002760-08C2-11E1-9073-0E8AC72E{suffix}

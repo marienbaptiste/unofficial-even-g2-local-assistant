@@ -484,6 +484,7 @@
     timerStart = Date.now();
     const el = document.getElementById('timer');
     el.classList.remove('inactive');
+    if (timerInterval) clearInterval(timerInterval);
     timerInterval = setInterval(() => {
       const elapsed = Math.floor((Date.now() - timerStart) / 1000);
       const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
@@ -498,17 +499,62 @@
     document.getElementById('timer').classList.add('inactive');
   }
 
+  function resetTimer() {
+    stopTimer();
+    document.getElementById('timer').textContent = '00:00';
+  }
+
+  // ========== Button state management ==========
+  function setButtonState(state) {
+    // States: 'idle', 'capturing', 'analyzing', 'done', 'failed'
+    const btnStart = document.getElementById('btn-start');
+    const btnStop = document.getElementById('btn-stop');
+    const btnRetry = document.getElementById('btn-retry');
+    const instructions = document.getElementById('instructions');
+
+    switch (state) {
+      case 'idle':
+        btnStart.disabled = false;
+        btnStop.disabled = true;
+        btnRetry.style.display = 'none';
+        instructions.classList.remove('visible');
+        break;
+      case 'capturing':
+        btnStart.disabled = true;
+        btnStop.disabled = false;
+        btnRetry.style.display = 'none';
+        instructions.classList.add('visible');
+        break;
+      case 'analyzing':
+        btnStart.disabled = true;
+        btnStop.disabled = true;
+        btnRetry.style.display = 'none';
+        instructions.classList.remove('visible');
+        break;
+      case 'done':
+        btnStart.disabled = false;
+        btnStop.disabled = true;
+        btnRetry.style.display = 'none';
+        instructions.classList.remove('visible');
+        break;
+      case 'failed':
+        btnStart.disabled = false;
+        btnStop.disabled = true;
+        btnRetry.style.display = '';
+        instructions.classList.remove('visible');
+        break;
+    }
+  }
+
   // ========== Capture ==========
   async function startCapture() {
     const desc = document.getElementById('description').value.trim();
-    document.getElementById('btn-start').disabled = true;
-    document.getElementById('btn-stop').disabled = false;
-    document.getElementById('instructions').classList.add('visible');
+    setButtonState('capturing');
     document.getElementById('results-card').classList.remove('visible');
+    resetTimer();
 
     log('Starting capture...');
     try {
-      // Clear stale signal so Claude doesn't act on old "done"
       await api('DELETE', '/api/signal').catch(() => {});
       const r = await api('POST', '/api/capture/start', { description: desc });
       log(r.message, 'log-ok');
@@ -518,65 +564,51 @@
       startTimer();
     } catch (e) {
       log(`Failed to start: ${e.message}`, 'log-error');
-      document.getElementById('btn-start').disabled = false;
-      document.getElementById('btn-stop').disabled = true;
+      setButtonState('idle');
     }
   }
 
   async function stopCapture() {
     stopTimer();
-    document.getElementById('btn-stop').disabled = true;
-    document.getElementById('btn-retry').style.display = 'none';
-    document.getElementById('instructions').classList.remove('visible');
-
+    setButtonState('analyzing');
     log('Pulling capture and analyzing (this may take a minute for bugreport)...');
 
     try {
       const r = await api('POST', '/api/capture/stop');
-      log(`Analysis complete: ${r.total_transport} transport packets, ${Object.keys(r.service_ids).length} services`, 'log-ok');
-      if (r.warnings) r.warnings.forEach(w => log(`Warning: ${w}`, 'log-warn'));
-
-      // Store for delta
-      if (currentResult) previousResult = currentResult;
-      currentResult = r;
-      allPackets = r.decoded_packets || [];
-      lastCaptureId = r.capture_id || '';
-
-      showResults(r);
-      loadHistory();
-      document.getElementById('btn-retry').style.display = 'none';
+      handleAnalysisResult(r);
     } catch (e) {
       log(`Failed: ${e.message}`, 'log-error');
-      log('Click "Retry Analysis" to try again.', 'log-warn');
-      document.getElementById('btn-retry').style.display = '';
+      log('Click "Retry Analysis" to try again (will re-analyze last capture file).', 'log-warn');
+      setButtonState('failed');
     }
-
-    document.getElementById('btn-start').disabled = false;
   }
 
   async function retryStop() {
-    document.getElementById('btn-retry').style.display = 'none';
-    document.getElementById('btn-stop').disabled = true;
-    log('Retrying analysis (skipping ADB pull, using last capture file)...');
+    setButtonState('analyzing');
+    resetTimer();
+    log('Retrying analysis (using last capture file, skipping ADB pull)...');
 
     try {
       const r = await api('POST', '/api/capture/retry-stop');
-      log(`Analysis complete: ${r.total_transport} transport packets, ${Object.keys(r.service_ids).length} services`, 'log-ok');
-
-      if (currentResult) previousResult = currentResult;
-      currentResult = r;
-      allPackets = r.decoded_packets || [];
-      lastCaptureId = r.capture_id || '';
-
-      showResults(r);
-      loadHistory();
+      handleAnalysisResult(r);
     } catch (e) {
       log(`Retry failed: ${e.message}`, 'log-error');
-      document.getElementById('btn-retry').style.display = '';
+      setButtonState('failed');
     }
+  }
 
-    document.getElementById('btn-start').disabled = false;
-    document.getElementById('btn-stop').disabled = false;
+  function handleAnalysisResult(r) {
+    log(`Analysis complete: ${r.total_transport} transport packets, ${Object.keys(r.service_ids).length} services`, 'log-ok');
+    if (r.warnings) r.warnings.forEach(w => log(`Warning: ${w}`, 'log-warn'));
+
+    if (currentResult) previousResult = currentResult;
+    currentResult = r;
+    allPackets = r.decoded_packets || [];
+    lastCaptureId = r.capture_id || '';
+
+    showResults(r);
+    loadHistory();
+    setButtonState('done');
   }
 
   // ========== Notes & Signal ==========
