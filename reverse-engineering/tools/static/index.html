@@ -556,8 +556,27 @@
 
   async function retryStop() {
     document.getElementById('btn-retry').style.display = 'none';
-    log('Retrying analysis...');
-    await stopCapture();
+    document.getElementById('btn-stop').disabled = true;
+    log('Retrying analysis (skipping ADB pull, using last capture file)...');
+
+    try {
+      const r = await api('POST', '/api/capture/retry-stop');
+      log(`Analysis complete: ${r.total_transport} transport packets, ${Object.keys(r.service_ids).length} services`, 'log-ok');
+
+      if (currentResult) previousResult = currentResult;
+      currentResult = r;
+      allPackets = r.decoded_packets || [];
+      lastCaptureId = r.capture_id || '';
+
+      showResults(r);
+      loadHistory();
+    } catch (e) {
+      log(`Retry failed: ${e.message}`, 'log-error');
+      document.getElementById('btn-retry').style.display = '';
+    }
+
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-stop').disabled = false;
   }
 
   // ========== Notes & Signal ==========

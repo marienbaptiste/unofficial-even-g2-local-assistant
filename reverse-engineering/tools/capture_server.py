@@ -451,6 +451,52 @@ async def reanalyze(req: AnalyzeRequest):
     return serializable_result
 
 
+@app.post("/api/capture/retry-stop")
+async def retry_stop():
+    """Retry analysis on the most recent capture file (skip ADB pull)."""
+    # Find the most recent .log file in captures dir
+    log_files = sorted(CAPTURES_DIR.glob("*.log"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not log_files:
+        raise HTTPException(status_code=404, detail="No capture files found. Run a full Stop & Analyze first.")
+
+    snoop_path = str(log_files[0])
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    description = _capture_state.get("description", "retry")
+
+    _capture_state["active"] = False
+
+    known_services = _get_known_services()
+    try:
+        result = analyzer.analyze_capture(snoop_path, known_services=known_services)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+    capture_id = f"capture_{timestamp}"
+    result_file = RESULTS_DIR / f"{capture_id}.json"
+
+    serializable_result = {
+        k: v for k, v in result.items()
+        if k not in ("_att_packets",)
+    }
+    serializable_result["capture_id"] = capture_id
+    serializable_result["description"] = description
+    serializable_result["timestamp"] = timestamp
+
+    result_file.write_text(json.dumps(serializable_result, indent=2, default=str))
+
+    progress = _load_progress()
+    progress["captures"].append({
+        "id": capture_id,
+        "description": description,
+        "timestamp": timestamp,
+        "filepath": snoop_path,
+        "service_ids": list(result["service_ids"].keys()),
+    })
+    _save_progress(progress)
+
+    return serializable_result
+
+
 @app.post("/api/diff")
 async def diff_captures_endpoint(old_id: str, new_id: str):
     """Compare two captures."""
