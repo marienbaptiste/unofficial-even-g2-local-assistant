@@ -67,6 +67,12 @@ class AnalyzeRequest(BaseModel):
     context: str = ""
 
 
+class SignalRequest(BaseModel):
+    status: str  # "done", "retry", "notes"
+    capture_id: str = ""
+    notes: str = ""
+
+
 # =============================================================================
 # ADB Helpers
 # =============================================================================
@@ -228,6 +234,10 @@ async def start_capture(req: CaptureStartRequest):
     _capture_state["started_at"] = datetime.now().isoformat()
     _capture_state["description"] = req.description
 
+    # Clear any stale signal so Claude doesn't act on old "done"
+    if SIGNAL_FILE.exists():
+        SIGNAL_FILE.unlink()
+
     return {
         "status": "started",
         "description": req.description,
@@ -376,6 +386,27 @@ async def get_capture(capture_id: str):
         raise HTTPException(status_code=500, detail=f"Error reading capture: {e}")
 
 
+@app.delete("/api/captures")
+async def delete_all_captures():
+    """Delete all capture logs and result files (except progress.json)."""
+    deleted = {"captures": 0, "results": 0}
+    for f in CAPTURES_DIR.iterdir():
+        if f.is_file():
+            f.unlink()
+            deleted["captures"] += 1
+        elif f.is_dir():
+            shutil.rmtree(str(f), ignore_errors=True)
+            deleted["captures"] += 1
+    for f in RESULTS_DIR.iterdir():
+        if f.is_file() and f.name != "progress.json":
+            f.unlink()
+            deleted["results"] += 1
+    # Clear signal file too
+    if SIGNAL_FILE.exists():
+        SIGNAL_FILE.unlink()
+    return {"deleted": deleted}
+
+
 @app.get("/api/progress")
 async def get_progress():
     """Get discovery progress."""
@@ -435,6 +466,54 @@ async def diff_captures_endpoint(old_id: str, new_id: str):
     new_data = json.loads(new_file.read_text())
 
     return analyzer.diff_captures(old_data, new_data)
+
+
+SIGNAL_FILE = BASE_DIR / "signal.json"
+
+
+@app.post("/api/signal")
+async def signal_claude(req: SignalRequest):
+    """Write a signal file that Claude can poll to know the user's status."""
+    signal = {
+        "status": req.status,
+        "capture_id": req.capture_id,
+        "notes": req.notes,
+        "timestamp": datetime.now().isoformat(),
+    }
+    SIGNAL_FILE.write_text(json.dumps(signal, indent=2))
+    return signal
+
+
+@app.get("/api/signal")
+async def read_signal():
+    """Read the current signal (for Claude to poll)."""
+    if not SIGNAL_FILE.exists():
+        return {"status": "idle", "timestamp": None}
+    try:
+        return json.loads(SIGNAL_FILE.read_text())
+    except (json.JSONDecodeError, Exception):
+        return {"status": "idle", "timestamp": None}
+
+
+@app.delete("/api/signal")
+async def clear_signal():
+    """Clear the signal file after Claude has consumed it."""
+    if SIGNAL_FILE.exists():
+        SIGNAL_FILE.unlink()
+    return {"cleared": True}
+
+
+
+@app.post("/api/captures/{capture_id}/notes")
+async def update_capture_notes(capture_id: str, req: SignalRequest):
+    """Add user notes to a capture result."""
+    result_file = RESULTS_DIR / f"{capture_id}.json"
+    if not result_file.exists():
+        raise HTTPException(status_code=404, detail=f"Capture '{capture_id}' not found")
+    data = json.loads(result_file.read_text())
+    data["user_notes"] = req.notes
+    result_file.write_text(json.dumps(data, indent=2, default=str))
+    return {"capture_id": capture_id, "notes": req.notes}
 
 
 # =============================================================================

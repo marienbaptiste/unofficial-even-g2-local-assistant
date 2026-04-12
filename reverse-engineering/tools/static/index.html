@@ -332,6 +332,7 @@
       <button class="btn-outline" onclick="testConnection()">Test Connection</button>
       <button class="btn-green" id="btn-start" onclick="startCapture()">Start Capture</button>
       <button class="btn-primary" id="btn-stop" onclick="stopCapture()" disabled>Stop &amp; Analyze</button>
+      <button class="btn-yellow" id="btn-retry" onclick="retryStop()" style="display:none">Retry Analysis</button>
       <span class="timer inactive" id="timer">00:00</span>
     </div>
     <div class="instructions" id="instructions">
@@ -340,6 +341,18 @@
       <strong>Step 3:</strong> Click "Stop &amp; Analyze" when done. The tool will pull the capture and decode it.
     </div>
     <div class="log-area" id="log-area"></div>
+  </div>
+
+  <!-- Notes & Signal Card -->
+  <div class="card">
+    <h2>Notes &amp; Signal to Claude</h2>
+    <textarea id="user-notes" placeholder="Your observations (e.g. 'saw 3 card lines appear on glasses, body text was truncated after ~50 chars, icons showed correctly')"></textarea>
+    <div class="controls" style="margin-top: 12px;">
+      <button class="btn-green" onclick="signalDone()">Done - Tell Claude</button>
+      <button class="btn-yellow" onclick="signalRetry()">Retrying Capture</button>
+      <button class="btn-outline" onclick="saveNotes()">Save Notes Only</button>
+      <span id="signal-status" style="font-size:13px;color:var(--text-dim);margin-left:8px;"></span>
+    </div>
   </div>
 
   <!-- Results Card -->
@@ -391,7 +404,7 @@
 
   <!-- History Card -->
   <div class="card">
-    <h2>Capture History</h2>
+    <h2 style="display:flex;justify-content:space-between;align-items:center;">Capture History <a href="#" onclick="clearHistory(); return false;" style="font-size:13px;font-weight:normal;color:var(--red);">Clear All</a></h2>
     <div class="history-list" id="history-list">
       <p style="color:var(--text-dim)" id="no-history">No captures yet.</p>
     </div>
@@ -495,6 +508,8 @@
 
     log('Starting capture...');
     try {
+      // Clear stale signal so Claude doesn't act on old "done"
+      await api('DELETE', '/api/signal').catch(() => {});
       const r = await api('POST', '/api/capture/start', { description: desc });
       log(r.message, 'log-ok');
       if (r.errors && r.errors.length) {
@@ -511,6 +526,7 @@
   async function stopCapture() {
     stopTimer();
     document.getElementById('btn-stop').disabled = true;
+    document.getElementById('btn-retry').style.display = 'none';
     document.getElementById('instructions').classList.remove('visible');
 
     log('Pulling capture and analyzing (this may take a minute for bugreport)...');
@@ -524,14 +540,77 @@
       if (currentResult) previousResult = currentResult;
       currentResult = r;
       allPackets = r.decoded_packets || [];
+      lastCaptureId = r.capture_id || '';
 
       showResults(r);
       loadHistory();
+      document.getElementById('btn-retry').style.display = 'none';
     } catch (e) {
       log(`Failed: ${e.message}`, 'log-error');
+      log('Click "Retry Analysis" to try again.', 'log-warn');
+      document.getElementById('btn-retry').style.display = '';
     }
 
     document.getElementById('btn-start').disabled = false;
+  }
+
+  async function retryStop() {
+    document.getElementById('btn-retry').style.display = 'none';
+    log('Retrying analysis...');
+    await stopCapture();
+  }
+
+  // ========== Notes & Signal ==========
+  let lastCaptureId = '';
+
+  async function signalDone() {
+    const notes = document.getElementById('user-notes').value.trim();
+    try {
+      await api('POST', '/api/signal', { status: 'done', capture_id: lastCaptureId, notes });
+      if (notes && lastCaptureId) {
+        await api('POST', `/api/captures/${lastCaptureId}/notes`, { status: 'done', notes });
+      }
+      document.getElementById('signal-status').textContent = 'Signaled: done';
+      document.getElementById('signal-status').style.color = 'var(--green)';
+      log('Signaled Claude: done', 'log-ok');
+      setTimeout(() => { document.getElementById('signal-status').textContent = ''; }, 3000);
+    } catch (e) {
+      document.getElementById('signal-status').textContent = 'Signal failed';
+      document.getElementById('signal-status').style.color = 'var(--red)';
+      setTimeout(() => { document.getElementById('signal-status').textContent = ''; }, 3000);
+    }
+  }
+
+  async function signalRetry() {
+    const notes = document.getElementById('user-notes').value.trim();
+    try {
+      await api('POST', '/api/signal', { status: 'retry', capture_id: lastCaptureId, notes });
+      document.getElementById('signal-status').textContent = 'Signaled: retrying';
+      document.getElementById('signal-status').style.color = 'var(--yellow)';
+      log('Signaled Claude: retrying capture', 'log-warn');
+      setTimeout(() => { document.getElementById('signal-status').textContent = ''; }, 3000);
+    } catch (e) {
+      document.getElementById('signal-status').textContent = 'Signal failed';
+      document.getElementById('signal-status').style.color = 'var(--red)';
+    }
+  }
+
+  async function saveNotes() {
+    const notes = document.getElementById('user-notes').value.trim();
+    if (!notes) return;
+    if (!lastCaptureId) {
+      document.getElementById('signal-status').textContent = 'No capture to attach notes to';
+      document.getElementById('signal-status').style.color = 'var(--yellow)';
+      return;
+    }
+    try {
+      await api('POST', `/api/captures/${lastCaptureId}/notes`, { status: 'notes', notes });
+      document.getElementById('signal-status').textContent = 'Notes saved';
+      document.getElementById('signal-status').style.color = 'var(--green)';
+    } catch (e) {
+      document.getElementById('signal-status').textContent = 'Save failed';
+      document.getElementById('signal-status').style.color = 'var(--red)';
+    }
   }
 
   // ========== Results ==========
@@ -754,6 +833,23 @@
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (e) {
       log(`Failed to load capture: ${e.message}`, 'log-error');
+    }
+  }
+
+  async function clearHistory() {
+    if (!confirm('Delete all capture files and history?')) return;
+    try {
+      await api('DELETE', '/api/captures');
+      const list = document.getElementById('history-list');
+      list.querySelectorAll('.history-item').forEach(el => el.remove());
+      document.getElementById('no-history').style.display = '';
+      currentResult = null;
+      previousResult = null;
+      allPackets = [];
+      lastCaptureId = '';
+      log('All captures deleted', 'log-ok');
+    } catch (e) {
+      log('Failed to delete captures: ' + e.message, 'log-error');
     }
   }
 
