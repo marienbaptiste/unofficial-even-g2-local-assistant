@@ -169,6 +169,7 @@ class EvenG2 {
     });
 
     await _authenticate();
+    await _initServices();
     _startHeartbeat();
   }
 
@@ -252,6 +253,79 @@ class EvenG2 {
     _authenticated = true;
   }
 
+  /// Send the service init sequence after authentication.
+  ///
+  /// The Even app sends this batch right after auth to tell the glasses
+  /// which features the phone supports. Without this, the AI listening
+  /// interface doesn't activate on "Hey Even".
+  ///
+  /// Packet payloads from BLE capture capture_20260412_225605.
+  Future<void> _initServices() async {
+    const d = Duration(milliseconds: 50);
+
+    // 1. Capability mode (0x80-0x20, type=5)
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x80, serviceLo: 0x20,
+      payload: [0x08, 0x05, 0x10, ...Varint.encode(_nextMsgId()), 0x22, 0x02, 0x08, 0x01],
+    ));
+    await Future.delayed(d);
+
+    // 2. Time sync (0x80-0x20, type=128)
+    final now = DateTime.now();
+    final unixSec = now.millisecondsSinceEpoch ~/ 1000;
+    final tzQuarters = now.timeZoneOffset.inMinutes ~/ 15;
+    final tsBytes = Varint.encode(unixSec);
+    final tzBytes = Varint.encode(tzQuarters);
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x80, serviceLo: 0x20,
+      payload: [
+        0x08, 0x80, 0x01, // type=128
+        0x10, ...Varint.encode(_nextMsgId()),
+        0x82, 0x08, // field 128 tag
+        ...Varint.encode(2 + tsBytes.length + tzBytes.length),
+        0x08, ...tsBytes,
+        0x10, ...tzBytes,
+      ],
+    ));
+    await Future.delayed(d);
+
+    // 3. Settings init (0x09-0x20, type=1)
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x09, serviceLo: 0x20,
+      payload: [
+        0x08, 0x01, 0x10, ...Varint.encode(_nextMsgId()),
+        0x1A, 0x0C,
+        0x4A, 0x0A, 0x08, 0x00, 0x10, 0x00, 0x18, 0x00, 0x20, 0x02, 0x28, 0x01,
+      ],
+    ));
+    await Future.delayed(d);
+
+    // 4. Display state (0x0D-0x20, type=0)
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x0D, serviceLo: 0x20,
+      payload: [0x08, 0x00, 0x10, ...Varint.encode(_nextMsgId())],
+    ));
+    await Future.delayed(d);
+
+    // 5. Dashboard / AI init (0x07-0x20, type=10)
+    await _send(Dashboard.buildConfig(_nextSeq(), _nextMsgId()));
+    await Future.delayed(d);
+
+    // 6. Settings query (0x09-0x20, type=2)
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x09, serviceLo: 0x20,
+      payload: [0x08, 0x02, 0x10, ...Varint.encode(_nextMsgId()), 0x22, 0x02, 0x08, 0x01],
+    ));
+    await Future.delayed(d);
+
+    // 7. Legacy hub init (0x81-0x20, type=1)
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x81, serviceLo: 0x20,
+      payload: [0x08, 0x01, 0x10, ...Varint.encode(_nextMsgId()), 0x1A, 0x00],
+    ));
+    await Future.delayed(d);
+  }
+
   // ---------------------------------------------------------------------------
   // Heartbeat — keeps the BLE connection alive
   // ---------------------------------------------------------------------------
@@ -318,6 +392,7 @@ class EvenG2 {
         await _transport.connect(_lastDevice!);
         _notifySubscription = _transport.notifyStream.listen(_onNotify);
         await _authenticate();
+        await _initServices();
         _startHeartbeat();
 
         // Restore mic if it was active
@@ -1045,6 +1120,7 @@ class G2Dashboard {
   final EvenG2 _g2;
   final _wakeController = StreamController<EvenAiEvent>.broadcast();
   final _eventController = StreamController<EvenAiEvent>.broadcast();
+  bool _sessionActive = false;
 
   G2Dashboard._(this._g2);
 
@@ -1074,16 +1150,25 @@ class G2Dashboard {
   // Session lifecycle
   // -----------------------------------------------------------------------
 
+  /// Whether an AI session is currently active (between [ackWake] and [endSession]).
+  bool get isSessionActive => _sessionActive;
+
   /// Acknowledge the wake word and start an AI session.
   ///
-  /// Sends the full handshake sequence confirmed from BLE captures:
-  /// 1. Config (type=10)
-  /// 2. Voice state BOUNDARY (type=1, state=3) — acknowledge wake
-  /// 3. Voice state LISTENING (type=1, state=1) — confirm ready
+  /// Protocol confirmed from BLE capture_20260412_234826 (session 2):
+  ///   #20857 << EVT type=1 state=3  (wake)
+  ///   #20859 >> CMD type=1 state=3  (ack wake)
+  ///   ... ~2800 packets gap (glasses opening mic) ...
+  ///   #23690 << EVT type=1 state=1  (LISTENING_STARTED)
+  ///   #23723 >> CMD type=10 config
+  ///   #23775 >> CMD type=1 state=2  (LISTENING_ACTIVE)
   ///
   /// Call this immediately after receiving an [onWake] event.
+  /// Returns when the glasses are ready for transcription.
   Future<void> ackWake() async {
     _g2._ensureConnected();
+    _sessionActive = true;
+
     // 1. Send config
     await _g2._send(Dashboard.buildConfig(_g2._nextSeq(), _g2._nextMsgId()));
     await Future.delayed(const Duration(milliseconds: 50));
@@ -1091,7 +1176,7 @@ class G2Dashboard {
     await _g2._send(Dashboard.buildVoiceState(_g2._nextSeq(), _g2._nextMsgId(), Dashboard.stateBoundary));
     await Future.delayed(const Duration(milliseconds: 50));
     // 3. Confirm LISTENING
-    await _g2._send(Dashboard.buildVoiceState(_g2._nextSeq(), _g2._nextMsgId(), Dashboard.stateListening));
+    await _g2._send(Dashboard.buildVoiceState(_g2._nextSeq(), _g2._nextMsgId(), Dashboard.stateListeningStarted));
   }
 
   /// Send a live transcription update (type=3).
@@ -1141,13 +1226,14 @@ class G2Dashboard {
   /// Signals the glasses to return to idle/dashboard mode.
   /// Call after [streamResponseDone] or to abort a session.
   Future<void> endSession() async {
+    _sessionActive = false;
     _g2._ensureConnected();
     await _g2._send(Dashboard.buildVoiceState(
       _g2._nextSeq(), _g2._nextMsgId(), Dashboard.stateBoundary,
     ));
   }
 
-  /// Send a session heartbeat to keep the session alive (type=9).
+  /// Send a session heartbeat (type=9).
   Future<void> heartbeat() async {
     _g2._ensureConnected();
     await _g2._send(Dashboard.buildHeartbeat(_g2._nextSeq(), _g2._nextMsgId()));
@@ -1190,6 +1276,7 @@ class G2Dashboard {
   }
 
   void _dispose() {
+    _sessionActive = false;
     _wakeController.close();
     _eventController.close();
   }

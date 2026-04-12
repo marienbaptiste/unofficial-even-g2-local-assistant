@@ -327,37 +327,26 @@
   <!-- Capture Card -->
   <div class="card">
     <h2>Capture</h2>
-    <textarea id="description" placeholder="Describe what you're capturing (e.g. 'single tap on right temple', 'scroll up then scroll down', 'open notification')"></textarea>
+    <textarea id="description" placeholder="Describe what you're capturing (e.g. 'Hey Even + full AI response', 'scroll up then scroll down')"></textarea>
     <div class="controls" style="margin-top: 12px;">
       <button class="btn-outline" onclick="testConnection()">Test Connection</button>
       <button class="btn-green" id="btn-start" onclick="startCapture()">Start Capture</button>
-      <button class="btn-primary" id="btn-stop" onclick="stopCapture()" disabled>Stop &amp; Analyze</button>
+      <button class="btn-primary" id="btn-stop" onclick="stopCapture()" style="display:none">Stop &amp; Analyze</button>
+      <button class="btn-outline" id="btn-cancel" onclick="cancelCapture()" style="display:none;border-color:var(--red);color:var(--red);">Cancel</button>
       <button class="btn-yellow" id="btn-retry" onclick="retryStop()" style="display:none">Retry Analysis</button>
       <span class="timer inactive" id="timer">00:00</span>
     </div>
     <div class="instructions" id="instructions">
-      <strong>Step 1:</strong> Bluetooth is restarting. Wait for your device to reconnect (~5-10 seconds).<br>
-      <strong>Step 2:</strong> Perform the action you described above on your BLE device.<br>
-      <strong>Step 3:</strong> Click "Stop &amp; Analyze" when done. The tool will pull the capture and decode it.
+      <strong>1.</strong> Bluetooth is restarting. Wait for reconnect (~5-10s).<br>
+      <strong>2.</strong> Perform your action on the glasses.<br>
+      <strong>3.</strong> Click <strong>Stop &amp; Analyze</strong> when done, or <strong>Cancel</strong> to discard.
     </div>
     <div class="log-area" id="log-area"></div>
   </div>
 
-  <!-- Notes & Signal Card -->
-  <div class="card">
-    <h2>Notes &amp; Signal to Claude</h2>
-    <textarea id="user-notes" placeholder="Your observations (e.g. 'saw 3 card lines appear on glasses, body text was truncated after ~50 chars, icons showed correctly')"></textarea>
-    <div class="controls" style="margin-top: 12px;">
-      <button class="btn-green" onclick="signalDone()">Done - Tell Claude</button>
-      <button class="btn-yellow" onclick="signalRetry()">Retrying Capture</button>
-      <button class="btn-outline" onclick="saveNotes()">Save Notes Only</button>
-      <span id="signal-status" style="font-size:13px;color:var(--text-dim);margin-left:8px;"></span>
-    </div>
-  </div>
-
   <!-- Results Card -->
   <div class="card results" id="results-card">
-    <h2>Analysis Results</h2>
+    <h2 style="display:flex;justify-content:space-between;align-items:center;">Analysis Results <a href="#" onclick="document.getElementById('results-card').classList.remove('visible'); return false;" style="font-size:13px;font-weight:normal;color:var(--text-dim);">Close</a></h2>
     <div class="summary-grid" id="summary-grid"></div>
 
     <div class="tab-bar">
@@ -504,163 +493,110 @@
     document.getElementById('timer').textContent = '00:00';
   }
 
-  // ========== Button state management ==========
-  function setButtonState(state) {
-    // States: 'idle', 'capturing', 'analyzing', 'done', 'failed'
-    const btnStart = document.getElementById('btn-start');
-    const btnStop = document.getElementById('btn-stop');
-    const btnRetry = document.getElementById('btn-retry');
-    const instructions = document.getElementById('instructions');
+  // ========== UI State ==========
+  let lastCaptureId = '';
 
-    switch (state) {
-      case 'idle':
-        btnStart.disabled = false;
-        btnStop.disabled = true;
-        btnRetry.style.display = 'none';
-        instructions.classList.remove('visible');
-        break;
-      case 'capturing':
-        btnStart.disabled = true;
-        btnStop.disabled = false;
-        btnRetry.style.display = 'none';
-        instructions.classList.add('visible');
-        break;
-      case 'analyzing':
-        btnStart.disabled = true;
-        btnStop.disabled = true;
-        btnRetry.style.display = 'none';
-        instructions.classList.remove('visible');
-        break;
-      case 'done':
-        btnStart.disabled = false;
-        btnStop.disabled = true;
-        btnRetry.style.display = 'none';
-        instructions.classList.remove('visible');
-        break;
-      case 'failed':
-        btnStart.disabled = false;
-        btnStop.disabled = true;
-        btnRetry.style.display = '';
-        instructions.classList.remove('visible');
-        break;
-    }
+  function setUI(state) {
+    const start = document.getElementById('btn-start');
+    const stop = document.getElementById('btn-stop');
+    const cancel = document.getElementById('btn-cancel');
+    const retry = document.getElementById('btn-retry');
+    const inst = document.getElementById('instructions');
+
+    // Start is always visible — just disabled during capture/analysis
+    start.style.display = '';
+    start.disabled = (state === 'capturing' || state === 'analyzing');
+
+    // Stop + Cancel only visible during active capture
+    stop.style.display = state === 'capturing' ? '' : 'none';
+    cancel.style.display = state === 'capturing' ? '' : 'none';
+
+    // Retry only on failure
+    retry.style.display = state === 'failed' ? '' : 'none';
+
+    // Instructions during capture
+    inst.classList.toggle('visible', state === 'capturing');
   }
 
   // ========== Capture ==========
   async function startCapture() {
     const desc = document.getElementById('description').value.trim();
-    setButtonState('capturing');
+    // Clear log for fresh capture
+    document.getElementById('log-area').innerHTML = '';
+    document.getElementById('log-area').classList.add('visible');
     document.getElementById('results-card').classList.remove('visible');
     resetTimer();
+    setUI('capturing');
 
     log('Starting capture...');
     try {
-      await api('DELETE', '/api/signal').catch(() => {});
       const r = await api('POST', '/api/capture/start', { description: desc });
       log(r.message, 'log-ok');
-      if (r.errors && r.errors.length) {
-        r.errors.forEach(e => log(e, 'log-warn'));
-      }
+      if (r.errors && r.errors.length) r.errors.forEach(e => log(e, 'log-warn'));
       startTimer();
     } catch (e) {
       log(`Failed to start: ${e.message}`, 'log-error');
-      setButtonState('idle');
+      setUI('idle');
     }
   }
 
   async function stopCapture() {
     stopTimer();
-    setButtonState('analyzing');
-    log('Pulling capture and analyzing (this may take a minute for bugreport)...');
+    log('Pulling capture and analyzing...');
+    // Disable stop/cancel immediately but keep start visible-but-disabled
+    document.getElementById('btn-stop').style.display = 'none';
+    document.getElementById('btn-cancel').style.display = 'none';
+    document.getElementById('btn-start').disabled = true;
+    document.getElementById('instructions').classList.remove('visible');
 
     try {
       const r = await api('POST', '/api/capture/stop');
-      handleAnalysisResult(r);
+      log(`Done: ${r.total_transport} transport packets, ${Object.keys(r.service_ids).length} services`, 'log-ok');
+      if (r.warnings) r.warnings.forEach(w => log(`Warning: ${w}`, 'log-warn'));
+
+      if (currentResult) previousResult = currentResult;
+      currentResult = r;
+      allPackets = r.decoded_packets || [];
+      lastCaptureId = r.capture_id || '';
+
+      showResults(r);
+      loadHistory();
     } catch (e) {
       log(`Failed: ${e.message}`, 'log-error');
-      log('Click "Retry Analysis" to try again (will re-analyze last capture file).', 'log-warn');
-      setButtonState('failed');
+      document.getElementById('btn-retry').style.display = '';
+    } finally {
+      // ALWAYS re-enable start no matter what
+      document.getElementById('btn-start').disabled = false;
     }
+  }
+
+  async function cancelCapture() {
+    stopTimer();
+    resetTimer();
+    setUI('idle');
+    log('Capture cancelled.', 'log-warn');
   }
 
   async function retryStop() {
-    setButtonState('analyzing');
-    resetTimer();
-    log('Retrying analysis (using last capture file, skipping ADB pull)...');
-
+    document.getElementById('btn-retry').style.display = 'none';
+    document.getElementById('btn-start').disabled = true;
+    log('Retrying analysis...');
     try {
       const r = await api('POST', '/api/capture/retry-stop');
-      handleAnalysisResult(r);
+      log(`Done: ${r.total_transport} transport packets, ${Object.keys(r.service_ids).length} services`, 'log-ok');
+
+      if (currentResult) previousResult = currentResult;
+      currentResult = r;
+      allPackets = r.decoded_packets || [];
+      lastCaptureId = r.capture_id || '';
+
+      showResults(r);
+      loadHistory();
     } catch (e) {
       log(`Retry failed: ${e.message}`, 'log-error');
-      setButtonState('failed');
-    }
-  }
-
-  function handleAnalysisResult(r) {
-    log(`Analysis complete: ${r.total_transport} transport packets, ${Object.keys(r.service_ids).length} services`, 'log-ok');
-    if (r.warnings) r.warnings.forEach(w => log(`Warning: ${w}`, 'log-warn'));
-
-    if (currentResult) previousResult = currentResult;
-    currentResult = r;
-    allPackets = r.decoded_packets || [];
-    lastCaptureId = r.capture_id || '';
-
-    showResults(r);
-    loadHistory();
-    setButtonState('done');
-  }
-
-  // ========== Notes & Signal ==========
-  let lastCaptureId = '';
-
-  async function signalDone() {
-    const notes = document.getElementById('user-notes').value.trim();
-    try {
-      await api('POST', '/api/signal', { status: 'done', capture_id: lastCaptureId, notes });
-      if (notes && lastCaptureId) {
-        await api('POST', `/api/captures/${lastCaptureId}/notes`, { status: 'done', notes });
-      }
-      document.getElementById('signal-status').textContent = 'Signaled: done';
-      document.getElementById('signal-status').style.color = 'var(--green)';
-      log('Signaled Claude: done', 'log-ok');
-      setTimeout(() => { document.getElementById('signal-status').textContent = ''; }, 3000);
-    } catch (e) {
-      document.getElementById('signal-status').textContent = 'Signal failed';
-      document.getElementById('signal-status').style.color = 'var(--red)';
-      setTimeout(() => { document.getElementById('signal-status').textContent = ''; }, 3000);
-    }
-  }
-
-  async function signalRetry() {
-    const notes = document.getElementById('user-notes').value.trim();
-    try {
-      await api('POST', '/api/signal', { status: 'retry', capture_id: lastCaptureId, notes });
-      document.getElementById('signal-status').textContent = 'Signaled: retrying';
-      document.getElementById('signal-status').style.color = 'var(--yellow)';
-      log('Signaled Claude: retrying capture', 'log-warn');
-      setTimeout(() => { document.getElementById('signal-status').textContent = ''; }, 3000);
-    } catch (e) {
-      document.getElementById('signal-status').textContent = 'Signal failed';
-      document.getElementById('signal-status').style.color = 'var(--red)';
-    }
-  }
-
-  async function saveNotes() {
-    const notes = document.getElementById('user-notes').value.trim();
-    if (!notes) return;
-    if (!lastCaptureId) {
-      document.getElementById('signal-status').textContent = 'No capture to attach notes to';
-      document.getElementById('signal-status').style.color = 'var(--yellow)';
-      return;
-    }
-    try {
-      await api('POST', `/api/captures/${lastCaptureId}/notes`, { status: 'notes', notes });
-      document.getElementById('signal-status').textContent = 'Notes saved';
-      document.getElementById('signal-status').style.color = 'var(--green)';
-    } catch (e) {
-      document.getElementById('signal-status').textContent = 'Save failed';
-      document.getElementById('signal-status').style.color = 'var(--red)';
+      document.getElementById('btn-retry').style.display = '';
+    } finally {
+      document.getElementById('btn-start').disabled = false;
     }
   }
 
@@ -905,6 +841,7 @@
   }
 
   // ========== Init ==========
+  setUI('idle');
   checkStatus();
   setInterval(checkStatus, 10000);
   loadHistory();

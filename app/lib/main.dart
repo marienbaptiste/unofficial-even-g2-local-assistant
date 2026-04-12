@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:even_g2_sdk/even_g2_sdk.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
-import 'test_tab.dart';
+// import 'test_tab.dart';
 
 void main() => runApp(const G2App());
 
@@ -26,10 +26,9 @@ class G2Page extends StatefulWidget {
   State<G2Page> createState() => _G2PageState();
 }
 
-class _G2PageState extends State<G2Page> with SingleTickerProviderStateMixin {
+class _G2PageState extends State<G2Page> {
   final _g2 = EvenG2();
   final _textCtrl = TextEditingController(text: 'Hello from Flutter!');
-  late final TabController _tabCtrl = TabController(length: 2, vsync: this);
 
   // State
   String _phase = 'disconnected'; // disconnected, connecting, conversate
@@ -103,7 +102,6 @@ class _G2PageState extends State<G2Page> with SingleTickerProviderStateMixin {
 
   @override
   void dispose() {
-    _tabCtrl.dispose();
     _healthTimer?.cancel();
     _connSub?.cancel();
     _levelSub?.cancel();
@@ -305,13 +303,11 @@ class _G2PageState extends State<G2Page> with SingleTickerProviderStateMixin {
   }
 
   void _endEvenAiSession() {
-    _dashboardHeartbeatTimer?.cancel();
-    _dashboardHeartbeatTimer = null;
     _levelSub?.cancel();
     _levelSub = null;
     _disconnectVoice();
     if (_g2.mic.isActive) _g2.mic.stop().catchError((_) => <Uint8List>[]);
-    // End session on glasses — return to idle
+    // End session on glasses — stops auto-heartbeat and returns to idle
     try { _g2.dashboard.endSession(); } catch (_) {}
     _aiSessionActive = false;
     setState(() {
@@ -416,37 +412,62 @@ class _G2PageState extends State<G2Page> with SingleTickerProviderStateMixin {
   }
 
   /// Called when glasses send "Hey Even" wake word event.
+  /// Replays the exact protocol from capture_20260412_234826 session 2.
   Future<void> _onEvenAiWake() async {
     if (_aiSessionActive) return;
     _aiSessionActive = true;
 
-    setState(() => _status = 'Even AI: wake detected, starting session...');
+    setState(() => _status = 'Even AI: wake detected, replaying capture...');
 
     try {
-      // 1. Acknowledge wake (sends config + boundary + listening)
+      // Replay exact session 2 from capture_20260412_234826
       await _g2.dashboard.ackWake();
+      setState(() => _status = 'Even AI: ack sent, sending transcription...');
 
-      // 2. Start mic (raw mode — skip Conversate init to avoid kicking out of Dashboard)
-      await _g2.mic.start(raw: true);
-      _levelSub = _g2.mic.levelStream.listen((level) {
-        setState(() => _vuLevel = level);
+      // Transcription (progressive, same as capture)
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _g2.dashboard.sendTranscription('what');
+      await Future.delayed(const Duration(milliseconds: 200));
+      await _g2.dashboard.sendTranscription('what is');
+      await Future.delayed(const Duration(milliseconds: 200));
+      await _g2.dashboard.sendTranscription('what is the');
+      await Future.delayed(const Duration(milliseconds: 200));
+      await _g2.dashboard.sendTranscription('what is the temperature');
+      await Future.delayed(const Duration(milliseconds: 300));
+      await _g2.dashboard.sendTranscription('what is the temperature in geneva');
+      await Future.delayed(const Duration(milliseconds: 200));
+      await _g2.dashboard.sendTranscription('what is the temperature in geneva right now');
+      await Future.delayed(const Duration(milliseconds: 300));
+      await _g2.dashboard.sendTranscription('What is the temperature in Geneva right now?');
+      setState(() => _status = 'Even AI: transcription done, thinking...');
+
+      // End speech
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _g2.dashboard.transcriptionDone();
+
+      // AI thinking
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _g2.dashboard.showThinking();
+
+      // AI response (3 chunks, same as capture)
+      await Future.delayed(const Duration(milliseconds: 1500));
+      await _g2.dashboard.streamResponse(
+        'The current temperature in Geneva is 9.5 degrees Celsius, though it feels more like 7.4 degrees Celsius due to the wind. There is currently slight');
+      await Future.delayed(const Duration(milliseconds: 100));
+      await _g2.dashboard.streamResponse(
+        ' rain in the area with a humidity level of 83 percent.');
+      await Future.delayed(const Duration(milliseconds: 100));
+      await _g2.dashboard.streamResponseDone();
+
+      setState(() {
+        _finalizedLines.add('Replay complete!');
+        _status = 'Even AI: replay done, waiting for timeout...';
       });
-      _connectVoice();
-      _micSub = _g2.mic.packetStream.listen((packet) {
-        _ws?.sink.add(packet);
-      });
-
-      // 3. Keep session alive with heartbeats
-      _dashboardHeartbeatTimer = Timer.periodic(
-        const Duration(seconds: 5),
-        (_) => _g2.dashboard.heartbeat().catchError((_) {}),
-      );
-
-      setState(() => _status = 'Even AI: listening...');
     } catch (e) {
-      debugPrint('Even AI wake error: $e');
+      debugPrint('Even AI replay error: $e');
+      setState(() => _status = 'Even AI: error — $e');
+    } finally {
       _aiSessionActive = false;
-      setState(() => _status = 'Even AI: wake error — $e');
     }
   }
 
@@ -509,13 +530,6 @@ class _G2PageState extends State<G2Page> with SingleTickerProviderStateMixin {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Even G2 Assistant'),
-        bottom: TabBar(
-          controller: _tabCtrl,
-          tabs: const [
-            Tab(text: 'Assistant'),
-            Tab(text: 'SDK Test'),
-          ],
-        ),
         actions: [
           _serviceIndicator('Whisper', _whisperOnline, _whisperModelLoaded),
           _serviceIndicator('OpenClaw', _openclawOnline, _openclawOnline),
@@ -537,16 +551,10 @@ class _G2PageState extends State<G2Page> with SingleTickerProviderStateMixin {
           ),
         ],
       ),
-      body: TabBarView(
-        controller: _tabCtrl,
+      body: Row(
         children: [
-          Row(
-            children: [
-              Expanded(child: _buildContent()),
-              if (_phase == 'conversate') _buildVuMeter(),
-            ],
-          ),
-          TestTab(g2: _g2),
+          Expanded(child: _buildContent()),
+          if (_phase == 'conversate') _buildVuMeter(),
         ],
       ),
     );

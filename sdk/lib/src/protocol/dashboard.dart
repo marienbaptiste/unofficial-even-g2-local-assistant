@@ -30,8 +30,11 @@ class Dashboard {
   // -----------------------------------------------------------------------
   // Voice states (VoiceState.state / field3.f1 values)
   // -----------------------------------------------------------------------
-  /// Mic active, recording speech.
-  static const int stateListening = 1;
+  /// Glasses mic opened, ready for speech (glasses → phone event).
+  static const int stateListeningStarted = 1;
+
+  /// Phone confirms listening is active (phone → glasses ack).
+  static const int stateListeningActive = 2;
 
   /// Session boundary — wake word detected (start) or session ended (end).
   static const int stateBoundary = 3;
@@ -95,7 +98,7 @@ class Dashboard {
   /// Signals end of speech — no more transcription updates will follow.
   static Uint8List buildTranscriptionDone(int seq, int msgId) {
     final msgIdVarint = Varint.encode(msgId);
-    final field4 = <int>[0x08, 0x01]; // f1=1 (done) — CONFIRMED from capture
+    final field4 = <int>[0x08, 0x02]; // f1=2 (speech ended) — CONFIRMED from capture_20260412_234826
     final payload = <int>[
       0x08, typeTranscriptionDone,
       0x10, ...msgIdVarint,
@@ -291,8 +294,8 @@ class EvenAiEvent {
   /// True if this is a "Hey Even" wake word event (BOUNDARY state).
   bool get isWake => type == EvenAiEventType.voiceState && state == Dashboard.stateBoundary;
 
-  /// True if this indicates the glasses mic is now active.
-  bool get isListening => type == EvenAiEventType.voiceState && state == Dashboard.stateListening;
+  /// True if the glasses mic just opened (LISTENING_STARTED).
+  bool get isListening => type == EvenAiEventType.voiceState && state == Dashboard.stateListeningStarted;
 
   /// True if TTS audio just started playing.
   bool get isAudioStarted => type == EvenAiEventType.audioProgress && audioStatus == 2;
@@ -301,7 +304,7 @@ class EvenAiEvent {
   String toString() {
     switch (type) {
       case EvenAiEventType.voiceState:
-        final s = state == Dashboard.stateBoundary ? 'BOUNDARY' : state == Dashboard.stateListening ? 'LISTENING' : '$state';
+        final s = state == Dashboard.stateBoundary ? 'BOUNDARY' : state == Dashboard.stateListeningStarted ? 'LISTENING_STARTED' : state == Dashboard.stateListeningActive ? 'LISTENING_ACTIVE' : '$state';
         return 'EvenAiEvent.voiceState(seq=$seq, state=$s)';
       case EvenAiEventType.audioProgress:
         return 'EvenAiEvent.audioProgress(seq=$seq, status=$audioStatus)';
