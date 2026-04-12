@@ -417,56 +417,31 @@ class _G2PageState extends State<G2Page> {
     if (_aiSessionActive) return;
     _aiSessionActive = true;
 
-    setState(() => _status = 'Even AI: wake detected, replaying capture...');
+    setState(() => _status = 'Even AI: wake detected, starting session...');
 
     try {
-      // Replay exact session 2 from capture_20260412_234826
+      // 1. Acknowledge wake (sends config + boundary + listening)
       await _g2.dashboard.ackWake();
-      setState(() => _status = 'Even AI: ack sent, sending transcription...');
 
-      // Transcription (progressive, same as capture)
-      await Future.delayed(const Duration(milliseconds: 500));
-      await _g2.dashboard.sendTranscription('what');
-      await Future.delayed(const Duration(milliseconds: 200));
-      await _g2.dashboard.sendTranscription('what is');
-      await Future.delayed(const Duration(milliseconds: 200));
-      await _g2.dashboard.sendTranscription('what is the');
-      await Future.delayed(const Duration(milliseconds: 200));
-      await _g2.dashboard.sendTranscription('what is the temperature');
-      await Future.delayed(const Duration(milliseconds: 300));
-      await _g2.dashboard.sendTranscription('what is the temperature in geneva');
-      await Future.delayed(const Duration(milliseconds: 200));
-      await _g2.dashboard.sendTranscription('what is the temperature in geneva right now');
-      await Future.delayed(const Duration(milliseconds: 300));
-      await _g2.dashboard.sendTranscription('What is the temperature in Geneva right now?');
-      setState(() => _status = 'Even AI: transcription done, thinking...');
-
-      // End speech
-      await Future.delayed(const Duration(milliseconds: 500));
-      await _g2.dashboard.transcriptionDone();
-
-      // AI thinking
-      await Future.delayed(const Duration(milliseconds: 500));
-      await _g2.dashboard.showThinking();
-
-      // AI response (3 chunks, same as capture)
-      await Future.delayed(const Duration(milliseconds: 1500));
-      await _g2.dashboard.streamResponse(
-        'The current temperature in Geneva is 9.5 degrees Celsius, though it feels more like 7.4 degrees Celsius due to the wind. There is currently slight');
-      await Future.delayed(const Duration(milliseconds: 100));
-      await _g2.dashboard.streamResponse(
-        ' rain in the area with a humidity level of 83 percent.');
-      await Future.delayed(const Duration(milliseconds: 100));
-      await _g2.dashboard.streamResponseDone();
-
-      setState(() {
-        _finalizedLines.add('Replay complete!');
-        _status = 'Even AI: replay done, waiting for timeout...';
+      // 2. Start mic (raw mode — skip Conversate init to avoid kicking out of Dashboard)
+      await _g2.mic.start(raw: true);
+      _levelSub = _g2.mic.levelStream.listen((level) {
+        setState(() => _vuLevel = level);
       });
+      _connectVoice();
+      _micSub = _g2.mic.packetStream.listen((packet) {
+        _ws?.sink.add(packet);
+      });
+
+      // 3. Keep session alive with heartbeats
+      _dashboardHeartbeatTimer = Timer.periodic(
+        const Duration(seconds: 5),
+        (_) => _g2.dashboard.heartbeat().catchError((_) {}),
+      );
+
+      setState(() => _status = 'Even AI: listening...');
     } catch (e) {
-      debugPrint('Even AI replay error: $e');
-      setState(() => _status = 'Even AI: error — $e');
-    } finally {
+      debugPrint('Even AI wake error: $e');
       _aiSessionActive = false;
     }
   }
