@@ -1,0 +1,100 @@
+// Even Realities G2 — Settings & EvenHub Services
+// Reconstructed from BLE protocol analysis
+//
+// G2 Settings: Device configuration (gestures, head-up angle, brightness, etc.)
+// EvenHub: Central event bus for device-generated events
+//
+// G2 Settings Service ID: INFERRED (need BLE capture)
+// EvenHub Service ID: 0x81-0x20 [CONFIRMED]
+// BLE: Commands on 5401, events/responses on 5402
+
+syntax = "proto3";
+
+package even.g2.settings;
+
+// ============================================
+// G2 Settings Service
+// ============================================
+
+// Source: G2SettingPackage class 
+message G2SettingPackage {
+  uint32 setting_info_type = 1;        // [INFERRED] Type of setting
+  G2Settings settings = 2;            // [INFERRED] Settings data
+}
+
+message G2Settings {
+  uint32 head_up_angle = 1;           // [INFERRED] Head-up detection angle threshold
+  bool head_up_trigger_dashboard = 2; // [INFERRED] Head-up triggers dashboard
+  uint32 wakeup_angle = 3;            // [INFERRED] Wake-up angle (DEVICE_WAKEUP_ANGLE)
+  uint32 brightness = 4;              // [INFERRED] Display brightness
+  // Gesture configuration
+  GestureControlList gesture_control = 5; // [INFERRED]
+}
+
+// Gesture mapping configuration
+message GestureControlList {
+  repeated GestureControl gestures = 1; // [INFERRED]
+}
+
+// Single gesture mapping
+// Source: APP_Send_Gesture_Control
+message GestureControl {
+  uint32 gesture_type = 1;    // [INFERRED] single_tap, double_tap, long_press, etc.
+  uint32 action = 2;          // [INFERRED] Action to trigger
+}
+
+// ============================================
+// EvenHub Service (0x81-20) — Event Bus
+// ============================================
+// Central event bus for all device-generated events.
+// Source: EvenHub.pb.dart, EvenHub.pbenum.dart
+
+message EvenHubDataPackage {
+  uint32 event_type = 1;      // [INFERRED] Event type enum
+  bytes event_data = 2;       // [INFERRED] Event-specific data
+}
+
+// Event types from glasses (on 5402):
+//   - Head-up angle triggers
+//   - Touchpad gestures (single tap, double tap, long press, simultaneous tap)
+//   - Wake word detection ("Hey Even")
+//   - Silent mode toggle (long press both touchpads)
+//   - Scroll events (EVENT_SCROLL, EVENT_NONE, EVENT_STREAM_COMPLETE)
+//   - Device status changes
+
+// ============================================
+// Sync Service (0x80-00)
+// ============================================
+
+// Community confirms: type=1, msg_id=2, data=13
+message SyncMessage {
+  uint32 type = 1;                     // [CONFIRMED] 0x0E = sync trigger
+  uint32 msg_id = 2;                   // [CONFIRMED]
+  bytes data = 13;                     // [CONFIRMED] (field 13, usually empty)
+}
+
+// ============================================
+// Auth / Session (0x80-20)
+// ============================================
+
+// Community confirms all fields below
+message AuthRequest {
+  uint32 type = 1;                     // [CONFIRMED] 0x04 = capability, 0x80 = time sync
+  uint32 msg_id = 2;                   // [CONFIRMED]
+  AuthData data = 3;                   // [CONFIRMED]
+}
+
+message AuthData {
+  uint32 capability = 1;              // [CONFIRMED] 0x01 = basic, 0x04 = full
+}
+
+message TimeSyncRequest {
+  uint32 type = 1;                     // [CONFIRMED] 0x80
+  uint32 msg_id = 2;                   // [CONFIRMED]
+  TimeSyncData sync = 16;             // [CONFIRMED] Field 16 (wire: 0x82 0x08)
+}
+
+message TimeSyncData {
+  uint64 timestamp = 1;               // [CONFIRMED] Unix timestamp
+  int64 transaction_id = 2;           // [CONFIRMED] Usually -24
+}

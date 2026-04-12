@@ -1,0 +1,115 @@
+// Even Realities G2 — Audio Control & Streaming
+// Reconstructed from BLE protocol analysis
+//
+// Controls the G2 glasses microphone and receives LC3-encoded audio.
+//
+// Audio handle: 0x0864 (third BLE channel, UUID suffix 7402) -- CONFIRMED 2026-04-03
+// Audio control service: UNKNOWN — 0xC4 is NOT audio control (it's file transfer/notify_whitelist.json)
+// BLE: Audio data on handle 0x0864. Audio start/stop mechanism not yet captured.
+//
+// CONFIRMED: Audio data on handle 0x0864 is NOT wrapped in G2 transport
+// protocol (no 0xAA header). Raw LC3 frames are sent directly.
+// All audio over BLE custom GATT profile -- zero SCO/classic BT packets.
+// Data is NOT encrypted in snoop captures (confirmed decodable as raw LC3).
+//
+// CONFIRMED frame format: 205B BLE packet = 5 x 40B LC3 frames + 5B trailer
+// Trailer: [1B value][0x00][1B status][0xFF][1B seq_counter]
+//
+// CONFIRMED audio codec: LC3 (Low Complexity Communication Codec)
+//   - Frame duration: 10ms (10000 us)
+//   - Sample rate: 16kHz
+//   - Bitrate: 32kbps
+//   - Bits per sample: 16-bit signed PCM output
+//   - Channels: 1 (mono, right-side microphone)
+//   - Library: liblc3.so (Google's), decoded successfully with lc3codec npm package
+//   - 160 samples per frame, 5 frames per BLE packet = 50ms audio per packet
+//   - Successfully decoded 82s of mic audio from BLE snoop capture
+
+syntax = "proto3";
+
+package even.g2.audio;
+
+// Audio control commands
+// Source: BLE capture analysis
+enum AudioCmd {
+  AUD_CMD_NONE = 0;
+  AUD_CMD_OPEN = 1;            // Start microphone capture
+  AUD_CMD_CLOSE = 2;           // Stop microphone capture
+  AUD_CMD_PAUSE = 3;           // Pause capture (keep session)
+  AUD_CMD_RESUME = 4;          // Resume paused capture
+}
+
+// Audio control command (phone -> glasses)
+// Source: BLE capture analysis
+// Packet type: APP_REQUEST_AUDIO_CTR_PACKET
+message AudioCtrCmd {
+  uint32 cmd = 1;              // [INFERRED - not yet captured] AudioCmd enum value
+  uint32 volume = 2;           // [INFERRED - not yet captured] Volume level
+  bool muted = 3;              // [INFERRED - not yet captured] Mute state
+}
+// NOTE: Audio control service ID is unknown. 0xC4 was initially suspected
+// but confirmed to be a file transfer service (sends user/notify_whitelist.json).
+// The audio stream on 0x0864 may start automatically during Conversate/AI sessions
+// without explicit audio control commands on the main channel.
+
+// Audio control response (glasses -> phone)
+// Source: BLE capture analysis
+// Packet type: OS_RESPONSE_AUDIO_CTR_PACKET
+// Result codes: APP_REQUEST_AUDIO_CTR_SUCCESS, APP_REQUEST_AUDIO_CTR_FAILED
+message AudioResCmd {
+  uint32 cmd = 1;              // [INFERRED - not yet captured] Echo of command
+  uint32 result = 2;           // [INFERRED - not yet captured] 0=success, 1=failed
+  uint32 err_code = 3;         // [INFERRED - not yet captured] Error code
+}
+
+// ============================================================
+// LC3 DECODING — nRF52840 Implementation
+// ============================================================
+//
+// The nRF52840 SDK includes LC3 codec support (natively or via liblc3).
+//
+// Decoder setup:
+//   int mem_size = lc3_decoder_size(10000, 16000);
+//   void* decoder = malloc(mem_size);
+//   lc3_setup_decoder(10000, 16000, 0, decoder);
+//
+// Per-frame decoding:
+//   int16_t pcm[160];  // lc3_frame_samples(10000, 16000) = 160
+//   int ret = lc3_decode(decoder, lc3_frame, frame_bytes,
+//                        LC3_PCM_FORMAT_S16, pcm, 1);
+//
+// Output: 160 samples × 16-bit = 320 bytes per 10ms frame
+// = 16,000 samples/sec = 32,000 bytes/sec raw PCM
+//
+// ============================================================
+// PROTOCOL FLOW — Audio Capture on nRF52840
+// ============================================================
+//
+// METHOD 1: Wake Word Trigger
+//   1. Subscribe to 5402 notifications
+//   2. Wait for EVEN_AI_WAKE_UP event (glasses detects "Hey Even")
+//   3. Send wakeup acknowledgment on 5401
+//   4. LC3 frames begin arriving on 5402 (or 7402)
+//   5. Parse transport header, extract LC3 frame bytes
+//   6. Decode each frame: lc3_decode() -> 160 PCM samples
+//   7. Feed PCM to your STT pipeline
+//
+// METHOD 2: App-Initiated
+//   1. Build AudioCtrCmd { cmd = AUD_CMD_OPEN }
+//   2. Wrap in transport header, send on 5401
+//   3. Wait for AudioResCmd with result=success on 5402
+//   4. LC3 frames begin arriving
+//   5. To stop: send AudioCtrCmd { cmd = AUD_CMD_CLOSE }
+//
+// AUDIO DATA FORMAT (per BLE notification on handle 0x0864):
+//   CONFIRMED: NOT wrapped in G2 transport protocol (no 0xAA header).
+//   Raw 205-byte packets containing:
+//     [40B LC3 frame][40B LC3 frame][40B LC3 frame][40B LC3 frame][40B LC3 frame][5B trailer]
+//   Trailer format: [1B value][0x00][1B status][0xFF][1B seq_counter]
+//   Each 40B LC3 frame decodes to 160 samples of 16-bit PCM (10ms @ 16kHz).
+//
+// TIMEOUT HANDLING:
+//   - Glasses stop sending after inactivity
+//   - App monitors: "Audio data timeout! Last received <N>s"
+//   - Send periodic heartbeats to keep the stream alive
+//   - On silence > threshold: close audio session

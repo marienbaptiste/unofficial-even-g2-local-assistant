@@ -1,0 +1,75 @@
+// Even Realities G2 — Translate Service
+// Reconstructed from BLE protocol analysis
+//
+// Displays source and translated text on glasses.
+//
+// Service ID: INFERRED (need BLE capture to confirm)
+// BLE: Commands on 5401, responses on 5402
+
+syntax = "proto3";
+
+package even.g2.translate;
+
+// Command IDs
+// Source: BLE capture analysis
+enum TranslateCmd {
+  TRANSLATE_CMD_NONE = 0;
+  TRANSLATE_CTRL = 1;                   // Control (start/stop)
+  TRANSLATE_RESULT = 2;                 // Translation result text
+  TRANSLATE_HEARTBEAT = 3;              // Keep-alive
+  TRANSLATE_NOTIFY = 4;                 // Notification
+  TRANSLATE_MODE_SWITCH = 5;            // Switch translation mode
+}
+
+// Top-level data package
+// Source: TranslateDataPackage class 
+message TranslateDataPackage {
+  uint32 command_id = 1;                // [INFERRED] TranslateCmd
+  TranslateControl ctrl = 2;           // [INFERRED]
+  TranslateResult result = 3;          // [INFERRED]
+  TranslateHeartBeat heart_beat = 4;   // [INFERRED]
+  TranslateNotify notify = 5;          // [INFERRED]
+  TranslateModeSwitch mode_switch = 6; // [INFERRED]
+  TranslateResp resp = 7;             // [INFERRED]
+}
+
+// Translation control
+message TranslateControl {
+  uint32 action = 1;           // Start/stop
+  string source_lang = 2;     // [INFERRED] Source language code
+  string target_lang = 3;     // [INFERRED] Target language code
+}
+
+// Translation result
+// Cross-reference with translation_event.proto (actual .proto from protocol analysis):
+//   message TranslationResult {
+//     string original = 1; string target = 2; string reason = 3;
+//     bool is_final = 4; string session_id = 5; int64 id = 6;
+//     int64 offset = 7; int64 duration = 8;
+//   }
+message TranslateResult {
+  string original = 1;        // [CONFIRMED from BLE capture] Source text
+  string target = 2;          // [CONFIRMED from BLE capture] Translated text
+  string reason = 3;          // [CONFIRMED from BLE capture]
+  bool is_final = 4;          // [CONFIRMED from BLE capture]
+  string session_id = 5;      // [CONFIRMED from BLE capture]
+  int64 id = 6;               // [CONFIRMED from BLE capture]
+  int64 offset = 7;           // [CONFIRMED from BLE capture]
+  int64 duration = 8;         // [CONFIRMED from BLE capture]
+}
+
+message TranslateHeartBeat {
+  uint64 timestamp = 1;       // [INFERRED]
+}
+
+message TranslateNotify {
+  // Fields TBD
+}
+
+message TranslateModeSwitch {
+  uint32 mode = 1;            // [INFERRED] Translation mode
+}
+
+message TranslateResp {
+  uint32 err_code = 1;        // [INFERRED]
+}

@@ -1,0 +1,46 @@
+# Flutter/Dart
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/.pub-cache/
+**/.pub/
+**/pubspec.lock
+
+# IDE
+**/.idea/
+**/.vscode/
+*.iml
+
+# Platform build artifacts
+**/windows/flutter/
+**/macos/Flutter/
+**/linux/flutter/
+
+# Node
+**/node_modules/
+**/package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+**/.env
+
+# Auto-generated Flutter files with personal paths
+**/.flutter-plugins-dependencies
+**/macos/Flutter/ephemeral/
+
+# BLE captures (contain personal device traffic)
+reverse-engineering/captures/
+*.log
+
+# Python cache
+**/__pycache__/
+*.pyc
+
+# Temp
+*.raw

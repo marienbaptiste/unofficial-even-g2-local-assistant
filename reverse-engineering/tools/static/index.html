@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BLE Capture Analyzer</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --green: #4ecca3;
+    --yellow: #f0c040;
+    --red: #e94560;
+    --text: #eee;
+    --text-dim: #8899aa;
+    --border: #2a3a5e;
+    --mono: 'Consolas', 'Monaco', 'Courier New', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 0;
+  }
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 {
+    font-size: 20px;
+    font-weight: 600;
+  }
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 13px;
+  }
+  .status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 6px;
+  }
+  .status-dot.connected { background: var(--green); }
+  .status-dot.disconnected { background: var(--red); }
+  .status-item { color: var(--text-dim); }
+  .status-item span { color: var(--text); }
+
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .card h2 {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+  }
+
+  textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 10px 12px;
+    font-size: 14px;
+    resize: vertical;
+    min-height: 60px;
+    font-family: inherit;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+
+  .controls {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  button:hover { opacity: 0.85; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-green { background: var(--green); color: #111; }
+  .btn-yellow { background: var(--yellow); color: #111; }
+  .btn-outline {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  .timer {
+    font-family: var(--mono);
+    font-size: 24px;
+    color: var(--accent);
+    margin-left: 12px;
+  }
+  .timer.inactive { color: var(--text-dim); }
+
+  .instructions {
+    background: var(--bg);
+    border-left: 3px solid var(--yellow);
+    padding: 12px 16px;
+    margin-top: 12px;
+    border-radius: 0 6px 6px 0;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-dim);
+    display: none;
+  }
+  .instructions.visible { display: block; }
+  .instructions strong { color: var(--yellow); }
+
+  .log-area {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+    max-height: 200px;
+    overflow-y: auto;
+    color: var(--text-dim);
+    white-space: pre-wrap;
+    display: none;
+  }
+  .log-area.visible { display: block; }
+  .log-area .log-error { color: var(--red); }
+  .log-area .log-ok { color: var(--green); }
+  .log-area .log-warn { color: var(--yellow); }
+
+  /* Results */
+  .results { display: none; }
+  .results.visible { display: block; }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .summary-stat {
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 12px;
+    text-align: center;
+  }
+  .summary-stat .num {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--green);
+  }
+  .summary-stat .label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    margin-top: 4px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 2px solid var(--border);
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+  }
+  td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  tr.new-service { background: rgba(233, 69, 96, 0.1); }
+  tr.new-service td:first-child::after {
+    content: " NEW";
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 10px;
+  }
+
+  .packet-list {
+    max-height: 500px;
+    overflow-y: auto;
+  }
+  .packet {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .packet-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    font-size: 11px;
+  }
+  .packet-header .dir-tx { color: var(--yellow); }
+  .packet-header .dir-rx { color: var(--green); }
+  .packet-header .svc { color: var(--accent); }
+  .protobuf-tree {
+    margin-top: 6px;
+    padding-left: 12px;
+    border-left: 2px solid var(--border);
+    color: var(--text-dim);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .proto-field-num { color: #7aa2f7; }
+  .proto-value { color: var(--green); }
+  .proto-string { color: var(--yellow); }
+
+  /* Capture history */
+  .history-list { display: flex; flex-direction: column; gap: 8px; }
+  .history-item {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .history-item:hover { border-color: var(--accent); }
+  .history-item .desc { font-weight: 500; }
+  .history-item .meta { font-size: 12px; color: var(--text-dim); }
+
+  .delta-positive { color: var(--green); }
+  .delta-negative { color: var(--red); }
+
+  .spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--text-dim);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+  .tab-btn {
+    padding: 8px 16px;
+    border: none;
+    background: none;
+    color: var(--text-dim);
+    font-size: 13px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    font-weight: 500;
+  }
+  .tab-btn.active {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+  }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>BLE Capture Analyzer</h1>
+  <div class="status-bar">
+    <div id="adb-status">
+      <span class="status-dot disconnected" id="status-dot"></span>
+      <span class="status-item">ADB: <span id="adb-label">checking...</span></span>
+    </div>
+    <span class="status-item">Phone: <span id="phone-model">--</span></span>
+    <span class="status-item">BT: <span id="bt-status">--</span></span>
+    <span class="status-item">Snoop: <span id="snoop-mode">--</span></span>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- Capture Card -->
+  <div class="card">
+    <h2>Capture</h2>
+    <textarea id="description" placeholder="Describe what you're capturing (e.g. 'single tap on right temple', 'scroll up then scroll down', 'open notification')"></textarea>
+    <div class="controls" style="margin-top: 12px;">
+      <button class="btn-outline" onclick="testConnection()">Test Connection</button>
+      <button class="btn-green" id="btn-start" onclick="startCapture()">Start Capture</button>
+      <button class="btn-primary" id="btn-stop" onclick="stopCapture()" disabled>Stop &amp; Analyze</button>
+      <span class="timer inactive" id="timer">00:00</span>
+    </div>
+    <div class="instructions" id="instructions">
+      <strong>Step 1:</strong> Bluetooth is restarting. Wait for your device to reconnect (~5-10 seconds).<br>
+      <strong>Step 2:</strong> Perform the action you described above on your BLE device.<br>
+      <strong>Step 3:</strong> Click "Stop &amp; Analyze" when done. The tool will pull the capture and decode it.
+    </div>
+    <div class="log-area" id="log-area"></div>
+  </div>
+
+  <!-- Results Card -->
+  <div class="card results" id="results-card">
+    <h2>Analysis Results</h2>
+    <div class="summary-grid" id="summary-grid"></div>
+
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="tab-services" onclick="switchTab(this)">Services</button>
+      <button class="tab-btn" data-tab="tab-packets" onclick="switchTab(this)">Packets</button>
+      <button class="tab-btn" data-tab="tab-handles" onclick="switchTab(this)">Handles</button>
+      <button class="tab-btn" data-tab="tab-delta" onclick="switchTab(this)">Delta</button>
+    </div>
+
+    <div class="tab-content active" id="tab-services">
+      <table id="services-table">
+        <thead>
+          <tr><th>Service ID</th><th>Name</th><th>Packets</th><th>Directions</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="tab-content" id="tab-packets">
+      <div class="controls" style="margin-bottom:10px">
+        <select id="filter-service" onchange="filterPackets()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:13px;">
+          <option value="">All services</option>
+        </select>
+        <select id="filter-dir" onchange="filterPackets()" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:13px;">
+          <option value="">All directions</option>
+          <option value="Phone">Phone->Device</option>
+          <option value="Device">Device->Phone</option>
+        </select>
+      </div>
+      <div class="packet-list" id="packet-list"></div>
+    </div>
+
+    <div class="tab-content" id="tab-handles">
+      <table id="handles-table">
+        <thead><tr><th>ATT Handle</th><th>Direction</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="tab-content" id="tab-delta">
+      <div id="delta-content"><p style="color:var(--text-dim)">Perform a second capture to see differences.</p></div>
+    </div>
+  </div>
+
+  <!-- History Card -->
+  <div class="card">
+    <h2>Capture History</h2>
+    <div class="history-list" id="history-list">
+      <p style="color:var(--text-dim)" id="no-history">No captures yet.</p>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // State
+  let timerInterval = null;
+  let timerStart = null;
+  let currentResult = null;
+  let previousResult = null;
+  let allPackets = [];
+
+  // ========== API helpers ==========
+  async function api(method, path, body) {
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    if (body) opts.body = JSON.stringify(body);
+    const resp = await fetch(path, opts);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      throw new Error(err.detail || 'Request failed');
+    }
+    return resp.json();
+  }
+
+  function log(msg, cls) {
+    const el = document.getElementById('log-area');
+    el.classList.add('visible');
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  // ========== Status ==========
+  async function checkStatus() {
+    try {
+      const s = await api('GET', '/api/status');
+      const dot = document.getElementById('status-dot');
+      const label = document.getElementById('adb-label');
+      if (s.connected) {
+        dot.className = 'status-dot connected';
+        label.textContent = 'connected';
+        document.getElementById('phone-model').textContent = s.model || '--';
+        document.getElementById('bt-status').textContent = s.bluetooth_on === true ? 'ON' : s.bluetooth_on === false ? 'OFF' : '--';
+        document.getElementById('snoop-mode').textContent = s.snoop_mode || '--';
+      } else {
+        dot.className = 'status-dot disconnected';
+        label.textContent = 'disconnected';
+        document.getElementById('phone-model').textContent = '--';
+        document.getElementById('bt-status').textContent = '--';
+        document.getElementById('snoop-mode').textContent = '--';
+      }
+      return s;
+    } catch (e) {
+      document.getElementById('status-dot').className = 'status-dot disconnected';
+      document.getElementById('adb-label').textContent = 'error';
+      return null;
+    }
+  }
+
+  async function testConnection() {
+    log('Testing ADB connection...');
+    const s = await checkStatus();
+    if (s && s.connected) {
+      log(`Connected: ${s.model} (serial: ${s.serial})`, 'log-ok');
+    } else {
+      log('No device connected. Check USB and ADB authorization.', 'log-error');
+    }
+  }
+
+  // ========== Timer ==========
+  function startTimer() {
+    timerStart = Date.now();
+    const el = document.getElementById('timer');
+    el.classList.remove('inactive');
+    timerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - timerStart) / 1000);
+      const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const s = String(elapsed % 60).padStart(2, '0');
+      el.textContent = `${m}:${s}`;
+    }, 500);
+  }
+
+  function stopTimer() {
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = null;
+    document.getElementById('timer').classList.add('inactive');
+  }
+
+  // ========== Capture ==========
+  async function startCapture() {
+    const desc = document.getElementById('description').value.trim();
+    document.getElementById('btn-start').disabled = true;
+    document.getElementById('btn-stop').disabled = false;
+    document.getElementById('instructions').classList.add('visible');
+    document.getElementById('results-card').classList.remove('visible');
+
+    log('Starting capture...');
+    try {
+      const r = await api('POST', '/api/capture/start', { description: desc });
+      log(r.message, 'log-ok');
+      if (r.errors && r.errors.length) {
+        r.errors.forEach(e => log(e, 'log-warn'));
+      }
+      startTimer();
+    } catch (e) {
+      log(`Failed to start: ${e.message}`, 'log-error');
+      document.getElementById('btn-start').disabled = false;
+      document.getElementById('btn-stop').disabled = true;
+    }
+  }
+
+  async function stopCapture() {
+    stopTimer();
+    document.getElementById('btn-stop').disabled = true;
+    document.getElementById('instructions').classList.remove('visible');
+
+    log('Pulling capture and analyzing (this may take a minute for bugreport)...');
+
+    try {
+      const r = await api('POST', '/api/capture/stop');
+      log(`Analysis complete: ${r.total_transport} transport packets, ${Object.keys(r.service_ids).length} services`, 'log-ok');
+      if (r.warnings) r.warnings.forEach(w => log(`Warning: ${w}`, 'log-warn'));
+
+      // Store for delta
+      if (currentResult) previousResult = currentResult;
+      currentResult = r;
+      allPackets = r.decoded_packets || [];
+
+      showResults(r);
+      loadHistory();
+    } catch (e) {
+      log(`Failed: ${e.message}`, 'log-error');
+    }
+
+    document.getElementById('btn-start').disabled = false;
+  }
+
+  // ========== Results ==========
+  function showResults(r) {
+    document.getElementById('results-card').classList.add('visible');
+
+    // Summary
+    const grid = document.getElementById('summary-grid');
+    grid.innerHTML = `
+      <div class="summary-stat"><div class="num">${r.total_att_packets || 0}</div><div class="label">ATT Packets</div></div>
+      <div class="summary-stat"><div class="num">${r.total_transport || 0}</div><div class="label">Transport Packets</div></div>
+      <div class="summary-stat"><div class="num">${Object.keys(r.service_ids || {}).length}</div><div class="label">Services</div></div>
+      <div class="summary-stat"><div class="num">${r.reassembled_count || 0}</div><div class="label">Reassembled</div></div>
+      <div class="summary-stat"><div class="num">${r.crc_failures || 0}</div><div class="label">CRC Failures</div></div>
+    `;
+
+    // Services table
+    const tbody = document.querySelector('#services-table tbody');
+    tbody.innerHTML = '';
+    const prevServices = previousResult ? new Set(Object.keys(previousResult.service_ids || {})) : null;
+
+    for (const [sid, info] of Object.entries(r.service_ids || {}).sort()) {
+      const tr = document.createElement('tr');
+      const isNew = prevServices && !prevServices.has(sid);
+      if (isNew) tr.className = 'new-service';
+      tr.innerHTML = `
+        <td>${sid}</td>
+        <td>${info.name}</td>
+        <td>${info.count}</td>
+        <td>${(info.directions || []).join(', ')}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+
+    // Packet filter dropdown
+    const filterSvc = document.getElementById('filter-service');
+    filterSvc.innerHTML = '<option value="">All services</option>';
+    for (const sid of Object.keys(r.service_ids || {}).sort()) {
+      const name = r.service_ids[sid].name;
+      const opt = document.createElement('option');
+      opt.value = sid;
+      opt.textContent = `${sid} (${name})`;
+      filterSvc.appendChild(opt);
+    }
+
+    // Handles
+    const htbody = document.querySelector('#handles-table tbody');
+    htbody.innerHTML = '';
+    for (const [handle, dir] of Object.entries(r.handle_map || {})) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${handle}</td><td>${dir}</td>`;
+      htbody.appendChild(tr);
+    }
+
+    // Delta
+    if (previousResult) {
+      showDelta(previousResult, r);
+    }
+
+    filterPackets();
+  }
+
+  function filterPackets() {
+    const svcFilter = document.getElementById('filter-service').value;
+    const dirFilter = document.getElementById('filter-dir').value;
+    const list = document.getElementById('packet-list');
+    list.innerHTML = '';
+
+    let filtered = allPackets;
+    if (svcFilter) filtered = filtered.filter(p => p.service_id === svcFilter);
+    if (dirFilter) filtered = filtered.filter(p => p.direction.startsWith(dirFilter));
+
+    // Limit display to 200 packets
+    const shown = filtered.slice(0, 200);
+
+    for (const p of shown) {
+      const div = document.createElement('div');
+      div.className = 'packet';
+
+      const dirClass = p.direction.startsWith('Phone') ? 'dir-tx' : 'dir-rx';
+      let headerHtml = `
+        <div class="packet-header">
+          <span class="${dirClass}">#${p.pkt_num} ${p.direction}</span>
+          <span class="svc">${p.service_id} (${p.service_name})</span>
+          <span>seq=${p.seq} crc=${p.crc_ok ? 'OK' : 'FAIL'} ${p.payload_len}B</span>
+        </div>
+      `;
+
+      if (p.reassembly === 'complete') {
+        headerHtml += `<div style="font-size:10px;color:var(--green)">Reassembled from ${p.fragment_count} fragments</div>`;
+      }
+
+      let protoHtml = '';
+      if (p.protobuf && p.protobuf.length) {
+        protoHtml = '<div class="protobuf-tree">' + renderProtoFields(p.protobuf, 0) + '</div>';
+      } else if (p.payload_hex) {
+        protoHtml = `<div style="color:var(--text-dim);font-size:11px;margin-top:4px">${p.payload_hex.substring(0, 120)}${p.payload_hex.length > 120 ? '...' : ''}</div>`;
+      }
+
+      div.innerHTML = headerHtml + protoHtml;
+      list.appendChild(div);
+    }
+
+    if (filtered.length > 200) {
+      const note = document.createElement('div');
+      note.style.cssText = 'color:var(--text-dim);font-size:12px;padding:8px;text-align:center;';
+      note.textContent = `Showing 200 of ${filtered.length} packets. Use filters to narrow down.`;
+      list.appendChild(note);
+    }
+    if (filtered.length === 0) {
+      list.innerHTML = '<p style="color:var(--text-dim);padding:12px;">No packets match filters.</p>';
+    }
+  }
+
+  function renderProtoFields(fields, depth) {
+    if (!fields || !fields.length) return '';
+    const indent = '&nbsp;&nbsp;'.repeat(depth);
+    let html = '';
+    for (const f of fields) {
+      const fn = `<span class="proto-field-num">field ${f.field}</span>`;
+      if (f.wire_type === 0) {
+        html += `${indent}${fn} [varint]: <span class="proto-value">${f.value}</span>${f.value < 256 ? ` (0x${f.value.toString(16).padStart(2,'0').toUpperCase()})` : ''}<br>`;
+      } else if (f.wire_type === 1) {
+        html += `${indent}${fn} [64-bit]: <span class="proto-value">0x${f.value_hex}</span> (int64=${f.as_int64})<br>`;
+      } else if (f.wire_type === 2) {
+        if (f.as_string !== undefined && f.length > 0) {
+          const s = f.as_string.length > 80 ? f.as_string.substring(0, 77) + '...' : f.as_string;
+          html += `${indent}${fn} [bytes]: <span class="proto-string">"${escapeHtml(s)}"</span> (${f.length}B)<br>`;
+        } else if (f.as_message) {
+          html += `${indent}${fn} [bytes]: &lt;message&gt; (${f.length}B)<br>`;
+          html += renderProtoFields(f.as_message, depth + 1);
+        } else {
+          const hex = f.raw_hex.length > 60 ? f.raw_hex.substring(0, 57) + '...' : f.raw_hex;
+          html += `${indent}${fn} [bytes]: <span class="proto-value">${hex}</span> (${f.length}B)<br>`;
+        }
+      } else if (f.wire_type === 5) {
+        html += `${indent}${fn} [32-bit]: <span class="proto-value">0x${f.value_hex}</span> (float=${f.as_float?.toFixed(4)}, int32=${f.as_int32})<br>`;
+      }
+    }
+    return html;
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function showDelta(old, now) {
+    const el = document.getElementById('delta-content');
+    const oldSids = new Set(Object.keys(old.service_ids || {}));
+    const newSids = new Set(Object.keys(now.service_ids || {}));
+
+    let html = '<table><thead><tr><th>Service ID</th><th>Name</th><th>Old</th><th>New</th><th>Delta</th></tr></thead><tbody>';
+
+    const allSids = new Set([...oldSids, ...newSids]);
+    for (const sid of [...allSids].sort()) {
+      const oldInfo = (old.service_ids || {})[sid];
+      const newInfo = (now.service_ids || {})[sid];
+      const oldCount = oldInfo ? oldInfo.count : 0;
+      const newCount = newInfo ? newInfo.count : 0;
+      const delta = newCount - oldCount;
+      const name = (newInfo || oldInfo).name;
+      const cls = !oldSids.has(sid) ? 'new-service' : '';
+      const deltaClass = delta > 0 ? 'delta-positive' : delta < 0 ? 'delta-negative' : '';
+      const deltaStr = delta > 0 ? `+${delta}` : `${delta}`;
+      html += `<tr class="${cls}"><td>${sid}</td><td>${name}</td><td>${oldCount}</td><td>${newCount}</td><td class="${deltaClass}">${deltaStr}</td></tr>`;
+    }
+
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  }
+
+  // ========== Tabs ==========
+  function switchTab(btn) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');
+  }
+
+  // ========== History ==========
+  async function loadHistory() {
+    try {
+      const r = await api('GET', '/api/captures');
+      const list = document.getElementById('history-list');
+      const noHist = document.getElementById('no-history');
+
+      if (!r.captures || r.captures.length === 0) {
+        noHist.style.display = '';
+        return;
+      }
+      noHist.style.display = 'none';
+
+      // Clear existing items (keep no-history element)
+      list.querySelectorAll('.history-item').forEach(el => el.remove());
+
+      for (const cap of r.captures.reverse()) {
+        const item = document.createElement('div');
+        item.className = 'history-item';
+        item.innerHTML = `
+          <div>
+            <div class="desc">${escapeHtml(cap.description || cap.capture_id)}</div>
+            <div class="meta">${cap.timestamp} | ${cap.total_transport || 0} packets | ${cap.service_count || 0} services</div>
+          </div>
+          <button class="btn-outline" style="padding:6px 12px;font-size:12px;" onclick="loadCapture('${cap.capture_id}')">View</button>
+        `;
+        list.appendChild(item);
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  async function loadCapture(captureId) {
+    try {
+      const r = await api('GET', `/api/captures/${captureId}`);
+      if (currentResult) previousResult = currentResult;
+      currentResult = r;
+      allPackets = r.decoded_packets || [];
+      showResults(r);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (e) {
+      log(`Failed to load capture: ${e.message}`, 'log-error');
+    }
+  }
+
+  // ========== Init ==========
+  checkStatus();
+  setInterval(checkStatus, 10000);
+  loadHistory();
+</script>
+</body>
+</html>

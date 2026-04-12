@@ -1,0 +1,143 @@
+// Even Realities R1 Ring — Ring & Health Protocols
+// Reconstructed from BLE protocol analysis
+//
+// The R1 ring uses a CUSTOM BINARY protocol (NOT protobuf) on its own BLE service.
+// The phone app bridges ring events to the G2 glasses via the G2 protobuf protocol.
+//
+// Ring BLE:
+//   Service: BAE80001-4F05-4503-8E65-3AF1F7329D1F
+//   Write:   BAE80012-4F05-4503-8E65-3AF1F7329D1F (phone -> ring)
+//   Notify:  BAE80013-4F05-4503-8E65-3AF1F7329D1F (ring -> phone)
+//   Device name: "EVEN R1_*"
+//
+// IMPORTANT: Ring communication uses custom binary commands (BleRing1Cmd),
+// NOT protobuf. The messages below are for the G2-side ring bridge only.
+
+syntax = "proto3";
+
+package even.g2.ring;
+
+// ============================================
+// G2-Side Ring Bridge (protobuf, on G2 BLE)
+// ============================================
+// When the phone app receives ring events, it wraps them in protobuf
+// and forwards to the G2 glasses via the G2 protocol.
+
+// Ring command IDs (on G2 side)
+// Source: BLE capture analysis
+enum RingCommandId {
+  RING_CMD_NONE = 0;
+  RING_CONNECT_INFO = 1;      // [INFERRED] Ring connection status
+  RING_CONNECT_TIMEOUT = 2;   // [INFERRED] Connection timeout
+  RING_GLASSES = 3;            // [INFERRED] Ring event forwarded to glasses
+}
+
+// Ring data package (sent to G2 glasses)
+message RingDataPackage {
+  uint32 command_id = 1;      // [INFERRED] RingCommandId
+  RingConnectInfo connect_info = 2; // [INFERRED]
+  RingGlassesEvent glasses_event = 3; // [INFERRED]
+}
+
+message RingConnectInfo {
+  string device_uuid = 1;     // [INFERRED] Ring BLE UUID
+  bool connected = 2;         // [INFERRED]
+}
+
+message RingGlassesEvent {
+  uint32 event_type = 1;      // [INFERRED] Gesture type
+  bytes event_data = 2;       // [INFERRED] Event payload
+}
+
+// ============================================
+// R1 Ring Binary Protocol (NOT protobuf)
+// ============================================
+// The ring uses BleRing1Cmd — a custom binary command protocol.
+// Multi-packet support via _handleMultiPacket.
+//
+// Command categories:
+//
+// SYSTEM:
+//   getSystemSettingsStatus  — query ring settings
+//   setSystemSettingsStatus  — update ring settings
+//   getAlgoKeyStatus         — algorithm key status
+//   setAlgoKey               — set algorithm key
+//   unpair                   — unpair ring
+//
+// HEALTH:
+//   getDailyData             — request daily health summary
+//   ackNotifyData            — acknowledge health data received
+//   getHealthSettingsStatus  — query health monitoring config
+//   setHealthSettingsStatus  — update health monitoring config
+//   setHealthEnable          — enable/disable health tracking
+//
+// FILE TRANSFER:
+//   BleRing1FileExportCmd    — export data from ring
+//   BleRing1FileCmdRequest   — file command request
+//   BleRing1FileDataReceive  — receive file data
+//
+// FIRMWARE UPDATE:
+//   Nordic DFU protocol (NordicDfu, dev.steenbakker.nordic_dfu)
+//
+// Ring data is identified by handler:
+//   "ring1Notify-point" — real-time health data (BleRing1HealthPoint)
+//   Parse errors: "ring1Notify-point: parse BleRing1HealthPoint failed, cmd="
+//   Unknown cmds: "ring1Notify-point: unknown cmd="
+
+// ============================================
+// Health Data (G2-side protobuf)
+// ============================================
+
+// Health command IDs
+// Source: BLE capture analysis
+enum HealthCommandId {
+  HEALTH_CMD_NONE = 0;
+  // Additional values TBD
+}
+
+// Health data package (synced to G2 display)
+message HealthDataPackage {
+  uint32 command_id = 1;      // [INFERRED]
+  // Health data fields TBD
+}
+
+// Health data types from ring:
+//   BleRing1HealthDaily — daily summary
+//   BleRing1HealthPoint — real-time data point
+//   BleRing1SystemInfo  — ring hardware/firmware info
+//   BleRing1SystemStatus — current status
+//   BleRing1SystemDeviceSn — serial number
+//   BleRing1SystemWearStatus — is ring worn
+//   BleRing1ChargeInfo — battery level
+//   BleRing1ChargeStatus — charging state
+
+// Health modules (from HealthModuleType):
+//   - Steps (all-day activity)
+//   - Active minutes
+//   - Sleep segments + sleep score
+//   - Skin temperature
+//   - Resting heart rate
+//   - HRV (heart rate variability)
+//   - SpO2 (blood oxygen)
+
+// ============================================
+// nRF52840 IMPLEMENTATION NOTES
+// ============================================
+//
+// For the R1 ring, you need to:
+// 1. Scan for "EVEN R1_*" devices
+// 2. Connect to GATT, discover service BAE80001
+// 3. Subscribe to BAE80013 notifications (enable with 0x0100 to CCCD)
+// 4. Send commands on BAE80012
+// 5. Parse BleRing1Cmd binary protocol (NOT protobuf)
+//
+// Ring event flow (to trigger actions):
+//   Ring (BAE80013) -> nRF52840 parses binary event
+//   -> Optionally forward to G2 glasses via RingDataPackage on 5401
+//
+// To directly capture ring gestures without the G2 glasses:
+//   1. Connect to ring only
+//   2. Subscribe to BAE80013
+//   3. Classify notifications: health points vs. gesture events
+//      (differentiate by command byte — needs BLE snoop to map)
+//   4. Trigger custom actions on gesture events

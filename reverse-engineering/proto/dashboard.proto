@@ -1,0 +1,102 @@
+// Even Realities G2 — Dashboard Service
+// Reconstructed from BLE protocol analysis
+//
+// Displays widgets: calendar, weather, stocks, news, etc.
+//
+// Service ID: 0x07-0x20 [CONFIRMED from BLE captures]
+// BLE: Commands on 5401, responses on 5402
+
+syntax = "proto3";
+
+package even.g2.dashboard;
+
+// Command IDs
+// Source: BLE capture analysis
+enum DashboardCommandId {
+  DASHBOARD_CMD_NONE = 0;
+  // Additional values TBD
+}
+
+// Receive flags
+enum DashboardReceiveFLAG {
+  DASHBOARD_RECEIVE_NONE = 0;
+  // Additional values TBD
+}
+
+// Receive commands (app -> glasses)
+enum Dashboard_Receive {
+  DASHBOARD_RX_NONE = 0;
+  // Additional values TBD
+}
+
+// Response commands (glasses -> app)
+enum Dashboard_Respond {
+  DASHBOARD_RSP_NONE = 0;
+  // Additional values TBD
+}
+
+// Combine modes
+enum DashboardCombineMode {
+  DASHBOARD_COMBINE_NONE = 0;
+  // Additional values TBD
+}
+
+// Markdown format type
+enum DashboardMDFormat {
+  DASHBOARD_MD_NONE = 0;
+  // Additional values TBD
+}
+
+// News refresh intervals
+enum DashboardNewsRefreshTime {
+  DASHBOARD_NEWS_REFRESH_NONE = 0;
+  // Additional values TBD
+}
+
+// Platform
+enum DashboardPlatform {
+  DASHBOARD_PLATFORM_NONE = 0;
+  // Additional values TBD
+}
+
+// Top-level data package
+// Source: DashboardDataPackage class 
+// Community confirms: type=1, msg_id=2, widget=3
+message DashboardDataPackage {
+  uint32 type = 1;                             // [CONFIRMED]
+  uint32 msg_id = 2;                           // [CONFIRMED]
+  DashboardContent content = 3;                // [CONFIRMED as "widget"]
+  DashboardDisplaySetting display_setting = 4; // [INFERRED]
+  DashboardMainPageState page_state = 5;       // [INFERRED]
+}
+
+// Dashboard content/widget
+message DashboardContent {
+  uint32 widget_type = 1;     // [CONFIRMED] Calendar, weather, stocks, etc.
+  bytes content = 2;           // [CONFIRMED] Widget-specific data
+}
+
+// Display settings
+message DashboardDisplaySetting {
+  // Fields TBD
+}
+
+// Dashboard receive from app
+message DashboardReceiveFromApp {
+  // Fields TBD
+}
+
+// Dashboard send to app
+message DashboardSendToApp {
+  // Fields TBD
+}
+
+// Dashboard respond to app
+message DashboardRespondToApp {
+  // Fields TBD
+}
+
+// Main page state
+message DashboardMainPageState {
+  // Fields TBD
+}

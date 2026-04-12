@@ -1,0 +1,416 @@
+{
+  "discovered_services": {
+    "0x80-0x00": "Sync/Heartbeat",
+    "0x80-0x01": "Sync Response",
+    "0x80-0x20": "Auth Handshake",
+    "0x01-0x00": "AI/Text Response (glasses to phone)",
+    "0x01-0x01": "AI/Text Ack",
+    "0x01-0x20": "AI/Text Content (phone to glasses)",
+    "0x03-0x00": "Transcribe Response (inferred from code)",
+    "0x03-0x20": "Transcribe Command (inferred from code)",
+    "0x04-0x00": "Display Wake Response",
+    "0x04-0x20": "Display Wake",
+    "0x07-0x00": "Dashboard Response",
+    "0x07-0x01": "Dashboard Event",
+    "0x07-0x20": "Dashboard",
+    "0x09-0x00": "Device Info",
+    "0x09-0x01": "Device Info Event",
+    "0x09-0x20": "Device Info Request",
+    "0x0B-0x00": "Conversate Response/Ack (glasses to phone)",
+    "0x0B-0x20": "Conversate Transcription (phone to glasses)",
+    "0x0C-0x00": "Tasks/Quick List Response (from g2_transport.proto)",
+    "0x0C-0x20": "Tasks/Quick List Command (from g2_transport.proto)",
+    "0x0D-0x00": "Device Config",
+    "0x0D-0x01": "Device Config Event",
+    "0x0D-0x20": "Config Command",
+    "0x0E-0x00": "Display Config Response",
+    "0x0E-0x20": "Display Config + Health Insights",
+    "0x10-0x00": "Unknown-10 Response (possibly Translate)",
+    "0x10-0x20": "Unknown-10 Command (possibly Translate)",
+    "0x20-0x00": "Commit Response (from g2_transport.proto)",
+    "0x20-0x20": "Commit Command (from g2_transport.proto)",
+    "0x81-0x00": "EvenHub Response",
+    "0x81-0x20": "EvenHub",
+    "0x91-0x00": "Unknown-91 Response",
+    "0x91-0x20": "Unknown-91 Command",
+    "0xC4-0x00": "File Transfer (notify_whitelist.json)",
+    "0xC5-0x00": "AI/Display Session Control (bidirectional)",
+    "0xE0-0x00": "EvenHub App Service (createPage, imageUpdate, textUpdate, audioControl, heartbeat)"
+  },
+  "completed_phases": [
+    "phase_0",
+    "phase_1",
+    "phase_2"
+  ],
+  "completed_steps": [
+    "adb_connected",
+    "hci_snoop_enabled",
+    "test_capture",
+    "parser_fix_pkt_serial",
+    "glasses_unpair",
+    "glasses_pair",
+    "even_ai_trigger",
+    "conversate_capture",
+    "conversate_clean_capture",
+    "audio_codec_identified",
+    "audio_decoded",
+    "evenhub_0xe0_decoded",
+    "conversate_ai_cards_decoded",
+    "full_ai_pipeline_working",
+    "flutter_assistant_published"
+  ],
+  "captures": [
+    {
+      "label": "Test Capture (reconnect)",
+      "file": "captures/fresh/FS/data/log/bt/btsnoop_hci.log",
+      "packets": 643,
+      "crc_ok": 631,
+      "services": 32
+    },
+    {
+      "label": "Glasses Unpair",
+      "file": "captures/glasses_unpair_20260403_164126.log",
+      "packets": 944,
+      "crc_ok": 921,
+      "services": 32
+    },
+    {
+      "label": "Glasses First Pair",
+      "file": "captures/glasses_pair_20260403_164601.log",
+      "packets": 1097,
+      "crc_ok": 1053,
+      "services": 32
+    },
+    {
+      "label": "Even AI (Hey Even)",
+      "file": "captures/even_ai_20260403_164957.log",
+      "packets": 1418,
+      "crc_ok": 1320,
+      "services": 33,
+      "notes": "Service 0x01 carries AI text content, 0xC4 likely audio, 0xC5 likely AI session control"
+    },
+    {
+      "label": "Conversate (first, started before BT restart)",
+      "file": "captures/conversate_20260403_165724.log",
+      "packets": 1832,
+      "crc_ok": 1670,
+      "services": 35
+    },
+    {
+      "label": "Conversate (clean)",
+      "file": "captures/conversate_clean_20260403_170252.log",
+      "packets": 2144,
+      "crc_ok": 1976,
+      "conversate_packets": 222,
+      "notes": "Full Conversate protobuf decoded: field1=type(1=init,6=data,0xFF=marker), field2=seq, field8.1=text, field8.2=0partial/1final. Glasses ack with field1=0xA2. Captured transcription: Ok, Okay., I'm talking right now., Oh c'est tres bien super."
+    },
+    {
+      "label": "Gestures (tilt, tap, double tap, scroll)",
+      "file": "captures/gestures_20260403_225216.log",
+      "packets": 222,
+      "crc_ok": 215
+    },
+    {
+      "label": "Gestures full (tilt, single/double tap, scroll, long press, both hold)",
+      "file": "captures/gestures_full_20260403_225751.log",
+      "packets": 462,
+      "crc_ok": 452
+    },
+    {
+      "label": "Gestures targeted (10s gaps, ordered)",
+      "file": "captures/gestures_targeted_20260403_231324.log",
+      "packets": 1230,
+      "crc_ok": 1210
+    },
+    {
+      "label": "Settings (display intensity/distance/height/balance, auto brightness, wear detection)",
+      "file": "captures/settings_20260403_234943.log",
+      "packets": 2652,
+      "crc_ok": 2592
+    },
+    {
+      "label": "Settings focused (height, distance, wear detection, auto brightness)",
+      "file": "captures/settings_focused_20260404_000022.log",
+      "packets": 3107,
+      "crc_ok": 3026
+    }
+  ],
+  "notes": [
+    "Parser bug fixed: pkt_serial is 1-indexed, changed >= to > in parse_g2_packet",
+    "Samsung SM-S948B requires bugreport method to pull btsnoop logs (no root)",
+    "Snoop log path on this device: /data/log/bt/btsnoop_hci.log",
+    "5 ATT handles active: 0x0842/0x0844 (main), 0x0864 (mic audio RX), 0x0882/0x0884 (display/secondary)",
+    "CORRECTED: Mic audio on UUID 6402 (display notify), NOT 7402. Handle 0x0864 in snoop = 0x0863 direct = UUID 6402",
+    "Mic streams immediately on 6402 notification subscribe - no explicit start command needed",
+    "Live mic capture CONFIRMED: 10s voice recording decoded successfully via direct BLE (no Even app)",
+    "CONFIRMED: Audio is LC3 codec, NOT encrypted. 5x40B LC3 frames per 205B BLE packet + 5B trailer",
+    "LC3 params: 10ms frame duration, 16kHz sample rate, 16-bit mono, 32kbps, 160 samples/frame",
+    "BLE packet format: [40B LC3][40B LC3][40B LC3][40B LC3][40B LC3][1B value][0x00][1B status][0xFF][1B seq]",
+    "Successfully decoded 82s of mic audio from Conversate capture using lc3codec npm package",
+    "Zero SCO packets in captures - all audio is over BLE custom profile, no classic BT needed",
+    "Audio handle 0x0864 is NOT wrapped in G2 transport (no 0xAA header) - raw LC3 frames directly",
+    "Service 0x01-0x20 confirmed as AI text delivery - carries news headlines and AI responses",
+    "Service 0x0B confirmed as Conversate - real-time transcription with partial/final markers",
+    "Service 0x0E-0x20 also carries R1 ring health insights (HR analysis text in field 2)",
+    "Service 0x80-0x00 contains ring device name in field 3: EVEN R1_8EAB6C",
+    "Service 0xC4 confirmed as audio - spikes during both AI and Conversate voice input",
+    "Service 0xC5 spiked from 6 to 28 during Even AI - AI session control",
+    "Sub-service pattern: 0x00=response, 0x01=event/ack, 0x20=command/data",
+    "Conversate protobuf: init(type=1), data(type=6, field8={text,is_final}), heartbeat(type=0xFF), ack(type=0xA2)",
+    "Audio codec CONFIRMED: LC3 32kbps, 5x40B frames per 205B BLE packet, 10ms/16kHz/mono",
+    "TIME SYNC FIX (2026-04-03): field2 in time sync protobuf is timezone offset in quarter-hours (UTC+2 = 8), NOT txid. Old code sent garbage txid (0xE8FFFFFFFFFFFFFF01). Fix: int(-time.altzone / 900). Glasses now show correct time.",
+    "GATT HANDLE MAP (direct enum): 5401=0x0841, 5402=0x0843, 6401=0x0861, 6402=0x0863, 7401=0x0881, 7402=0x0883, NUS TX=0x08A1, NUS RX=0x08A3",
+    "HEAD TILT CONFIRMED via direct BLE (no app): events on 0x01-0x01 (single tap + STATE val=4), display on/off on 0x0D-0x01, dashboard cached in firmware",
+    "From g2_transport.proto: 0x03=Transcribe, 0x0C=Tasks, 0x20=Commit, 0x0A=Even AI(?), 0x05=Quick List(?), 0x08=Navigation(?)",
+    "Gesture events CONFIRMED on 0x01-0x01 (glasses->phone): field6.1=seq(1022+), field6.5=gesture, field6.3=state",
+    "KEY INSIGHT: Glasses report STATE CHANGES not gestures. No tap/swipe/longpress events - only position/item/display state outcomes.",
+    "CORRECTED GESTURE MAP (from live Flutter app testing 2026-04-04):",
+    "  Previous capture-based map was WRONG. Live testing revealed:",
+    "  SCROLL to position N: 2a06/2a08 with sub-fields encoding target position, NOT gesture type",
+    "    2a06080112021001 = scroll to position 1 (was mislabeled as single_tap)",
+    "    2a080801120408011002 = scroll to position 2 (was mislabeled as double_tap)",
+    "    2a080801120408021003 = scroll to position 3 (was mislabeled as scroll)",
+    "    2a080801120408031004 = scroll to position 4",
+    "  TAP on dashboard item N: 2a04 08{N} + empty field tag",
+    "    f1=3 = tap item 3 (was mislabeled as long_press)",
+    "    f1=4 = tap item 4 (was mislabeled as both_hold)",
+    "    f1=5 = tap item 5, f1=6 = tap item 6",
+    "  TAP on item 1: goes through 0x0C service (080c10017200), NOT 0x01-0x01",
+    "  EXIT item: 0x0C service with 72020801 flag",
+    "  HEAD_TILT: STATE events with 1a XX 0a XX 08{pos} 1200",
+    "  Teleprompter scroll: handled internally by firmware, NO BLE event sent",
+    "  Dashboard scroll: position events sent, direction inferred from position change",
+    "  head_tilt: STATE events via field6.3 with val counting down 10->1 (dashboard scroll)",
+    "EvenHub is on service 0xE0 (NOT 0x81): type=0 createPage, type=3 imageUpdate, type=5 textUpdate, type=9 audioControl, type=12 heartbeat",
+    "Conversate type=5: AI response card with icon(field7.1) + title(field7.2) + body(field7.3) + done(field7.4)",
+    "Conversate type=7: User prompt display with field13.2 = transcribed text",
+    "FULL AI PIPELINE WORKING: Glasses mic → Whisper STT → OpenClaw → glasses display. Published github.com/marienbaptiste/unofficial-even-g2-local-assistant",
+    "Glasses do NOT distinguish left vs right touchpad or scroll direction - app handles context",
+    "Device status on 0x09-0x01: firmware 2.0.9.20, battery in field12 (84%), field8=30",
+    "Display on/off via 0x0D-0x01: field3.1=1 means display on, empty field3 means display off",
+    "SETTINGS via 0x09-0x20 (from focused capture with 10s gaps, mapped by order):",
+    "  field3.field12.f1=1: init/sync sent before each setting group",
+    "  field3.field2.f1: display height AND distance - shares same field, values 0,5,6,8,12",
+    "  field3.field3.f1: TO BE CONFIRMED - possibly auto brightness or other toggle",
+    "  field3.field5.f1: CONFIRMED wear detection (tested via direct BLE toggle, beep heard on TEST 3)",
+    "  field3.field1.f1: TO BE CONFIRMED - unknown, no beep when toggled",
+    "SETTINGS via 0x0E-0x20: intensity=widget5 f3=float(83-113), balance=widget6 f3/f4=float",
+    "SETTINGS via 0x0D-0x20: TO BE CONFIRMED - field2 value acts as setting ID (51,61,71,114,143,153,161,249)"
+  ],
+  "remaining_captures": [
+    {
+      "feature": "Head tilt / gestures",
+      "status": "CAPTURED",
+      "notes": "Gestures go through 0x01-0x01, NOT EvenHub. Display state via 0x0D-0x01."
+    },
+    {
+      "feature": "G2 Settings - display",
+      "action": "Change each one at a time with 10s gaps: 1) display intensity, 2) display distance (close/mid/far), 3) display height (high to low positions), 4) intensity balance (left/right values), 5) auto brightness on/off",
+      "expected_services": [
+        "0x0D Config",
+        "0x0E Display Config"
+      ],
+      "priority": "high"
+    },
+    {
+      "feature": "G2 Settings - wear & other",
+      "action": "Toggle: 1) wear detection on/off, 2) font size, 3) scroll mode, 4) gesture mapping",
+      "expected_services": [
+        "0x0D Config"
+      ],
+      "priority": "high"
+    },
+    {
+      "feature": "Translate",
+      "action": "Start a Translate session in Even app, speak in one language",
+      "expected_services": [
+        "0x10 possibly"
+      ],
+      "priority": "medium"
+    },
+    {
+      "feature": "Navigation",
+      "action": "Start navigation in Even app or Google Maps with glasses connected",
+      "expected_services": [
+        "0x08 possibly"
+      ],
+      "priority": "medium"
+    },
+    {
+      "feature": "Ring gestures",
+      "action": "Tap R1 ring, double tap, scroll gesture",
+      "expected_services": [
+        "Ring service BAE80001",
+        "0x81 EvenHub bridge"
+      ],
+      "priority": "medium"
+    },
+    {
+      "feature": "Ring settings - low power mode",
+      "action": "Toggle low power mode on/off in Even app",
+      "expected_services": [
+        "Ring service BAE80001"
+      ],
+      "priority": "medium"
+    },
+    {
+      "feature": "Ring health data",
+      "action": "Open health section in Even app, sync ring data",
+      "expected_services": [
+        "0x06 Ring Health",
+        "0x0E Display Config"
+      ],
+      "priority": "low"
+    },
+    {
+      "feature": "Notifications",
+      "action": "1) Receive a notification (send yourself a message), 2) Acknowledge/mark seen in the app",
+      "expected_services": [
+        "0x02 Notification (from g2_transport.proto)",
+        "0xC4 File Transfer (notify_whitelist.json)"
+      ],
+      "priority": "high",
+      "notes": "Need to capture both incoming notification display and mark-as-read flow. 0xC4 already confirmed as notification whitelist sync."
+    },
+    {
+      "feature": "Dashboard - date/time update",
+      "action": "Observe dashboard showing current time, or change timezone",
+      "expected_services": [
+        "0x07 Dashboard",
+        "0x80 Sync (time sync)"
+      ],
+      "priority": "medium"
+    },
+    {
+      "feature": "Dashboard - battery level",
+      "action": "Check battery display on dashboard (already partial: 0x09 field12=84%)",
+      "expected_services": [
+        "0x09 Device Info"
+      ],
+      "priority": "low",
+      "notes": "Partially captured: firmware 2.0.9.20, battery=field12 (84%). Need to confirm display update path."
+    },
+    {
+      "feature": "Dashboard - weather",
+      "action": "Observe weather icon and temperature on dashboard, or change location",
+      "expected_services": [
+        "0x07 Dashboard",
+        "0x0E Display Config"
+      ],
+      "priority": "medium"
+    },
+    {
+      "feature": "Dashboard - news update",
+      "action": "Let news refresh on dashboard or trigger manual refresh",
+      "expected_services": [
+        "0x01 AI/Text Content"
+      ],
+      "priority": "medium",
+      "notes": "0x01-0x20 already confirmed carrying news text (headlines visible in AI capture)"
+    },
+    {
+      "feature": "Dashboard - stock update",
+      "action": "Enable stocks widget in Even app, observe stock data on dashboard",
+      "expected_services": [
+        "0x07 Dashboard"
+      ],
+      "priority": "low"
+    },
+    {
+      "feature": "Dashboard - calendar update",
+      "action": "Have a calendar event upcoming, observe it on dashboard",
+      "expected_services": [
+        "0x07 Dashboard",
+        "0xC5 possibly"
+      ],
+      "priority": "medium",
+      "notes": "0xC5 packets contained JSON-like data during AI session - could be calendar/widget data"
+    },
+    {
+      "feature": "Tasks - add from app, mark done on glasses",
+      "action": "1) Add a task in Even app, 2) Mark it as done via glasses gesture",
+      "expected_services": [
+        "0x0C Tasks/Quick List"
+      ],
+      "priority": "high"
+    },
+    {
+      "feature": "Health metrics - BPM, O2, sleep, steps, calories",
+      "action": "Open health section in Even app, sync ring data, observe each metric",
+      "expected_services": [
+        "0x0E Display Config (health insights)",
+        "Ring service BAE80001"
+      ],
+      "priority": "high",
+      "notes": "0x0E already confirmed carrying R1 health text like 'Resting HR rose above baseline'. Need to capture raw BPM/O2/steps/calories data."
+    },
+    {
+      "feature": "Bitmap/image push to display",
+      "action": "Capture the Even app sending an image (navigation icon, weather icon, etc.) to the glasses",
+      "expected_services": ["UUID 6401 (display data write)", "0x0E Display Config"],
+      "priority": "medium",
+      "notes": "6401 is the display data write channel. Multi-fragment packets and BMP headers expected. Need to decode the image rendering protocol."
+    },
+    {
+      "feature": "News sources configuration",
+      "action": "Change news sources/feeds in Even app settings, capture what's sent to glasses",
+      "expected_services": ["0x01 AI/Text Content", "0xC5 Session Control (JSON)"],
+      "priority": "medium",
+      "notes": "0x01-0x20 already confirmed carrying news headlines. Need to capture: how sources are configured, feed list format, push vs pull model, refresh trigger."
+    },
+    {
+      "feature": "Teleprompter autoscroll",
+      "action": "Capture how the Even app triggers autoscroll mode (scroll_mode 0x01) and AI-triggered scrolling",
+      "expected_services": ["0x06 Teleprompter"],
+      "priority": "medium",
+      "notes": "Manual scroll mode (0x00) is confirmed. Autoscroll (0x01) and AI-triggered scroll sync need testing."
+    },
+    {
+      "feature": "EVENHUB: Container page system (from official SDK)",
+      "action": "Capture createStartUpPageContainer, rebuildPageContainer protobuf on service 0x81",
+      "expected_services": ["0x81 EvenHub"],
+      "priority": "critical",
+      "notes": "Page = up to 12 containers (8 text + 4 image). TextContainerProperty has x/y/width/height/border/content. ImageContainerProperty has x/y/width(20-288)/height(20-144). ListContainerProperty has items with selection."
+    },
+    {
+      "feature": "EVENHUB: Text container update",
+      "action": "Capture textContainerUpgrade — partial text update with containerID, contentOffset, contentLength",
+      "expected_services": ["0x81 EvenHub"],
+      "priority": "critical"
+    },
+    {
+      "feature": "EVENHUB: Image push to container",
+      "action": "Capture updateImageRawData — push image bytes to a container by ID",
+      "expected_services": ["0x81 EvenHub"],
+      "priority": "critical",
+      "notes": "Image limits: 20-288px wide, 20-144px tall. Supports number[], base64, Uint8Array."
+    },
+    {
+      "feature": "EVENHUB: IMU data streaming",
+      "action": "Capture imuControl enable/disable and IMU_Report_Data (x,y,z doubles)",
+      "expected_services": ["0x81 EvenHub"],
+      "priority": "high",
+      "notes": "Configurable report rate: 100-1000ms. Reports x/y/z accelerometer/gyro. Event type = IMU_DATA_REPORT (8)."
+    },
+    {
+      "feature": "EVENHUB: Event system with touch source",
+      "action": "Capture click/scroll/double-click events with EventSourceType (L=3, R=1, Ring=2)",
+      "expected_services": ["0x81 EvenHub"],
+      "priority": "high",
+      "notes": "CORRECTS our earlier finding: left/right touchpad IS distinguished via EventSourceType. CLICK=0, SCROLL_TOP=1, SCROLL_BOTTOM=2, DOUBLE_CLICK=3."
+    },
+    {
+      "feature": "EVENHUB: Audio control via EvenHub",
+      "action": "Capture audioControl(true/false) protobuf to find the mic enable/disable command",
+      "expected_services": ["0x81 EvenHub"],
+      "priority": "high",
+      "notes": "This is the missing mic start command we couldn't find! The Even app sends it through EvenHub."
+    },
+    {
+      "feature": "EVENHUB: Page shutdown",
+      "action": "Capture shutDownPageContainer with exitMode (0=immediate, 1=ask user)",
+      "expected_services": ["0x81 EvenHub"],
+      "priority": "medium"
+    }
+  ]
+}

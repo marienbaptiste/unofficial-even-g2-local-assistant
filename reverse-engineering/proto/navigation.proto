@@ -1,0 +1,36 @@
+// Even Realities G2 — Navigation Service
+// Reconstructed from BLE protocol analysis
+//
+// Turn-by-turn navigation display with mini-maps and direction arrows.
+//
+// Service ID: INFERRED (need BLE capture)
+// BLE: Commands on 5401, display data on 6401/6402
+
+syntax = "proto3";
+
+package even.g2.navigation;
+
+// Source: BLE capture analysis
+// Related: Navigation_Cmd_list enum
+
+message NavigationDataPackage {
+  uint32 command_id = 1;              // [INFERRED] Navigation_Cmd_list value
+  NavigationData data = 2;           // [INFERRED]
+}
+
+// Navigation data
+// The navigation feature renders:
+//   - Turn direction arrows (as images)
+//   - Distance to next turn
+//   - Street names
+//   - Mini-map (as 4-bit grayscale BMP)
+message NavigationData {
+  uint32 direction = 1;       // [INFERRED] Turn direction enum
+  string distance = 2;        // [INFERRED] Distance text ("200 m")
+  string street = 3;          // [INFERRED] Street name
+  bytes arrow_image = 4;      // [INFERRED] Direction arrow image data
+  bytes map_image = 5;        // [INFERRED] Mini-map BMP data
+}
+
+// Navigation is heavily image-based — most data goes through
+// the display pipeline (6401/6402) rather than text protocol.

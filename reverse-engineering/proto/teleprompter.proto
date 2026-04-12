@@ -1,0 +1,219 @@
+// Even Realities G2 — Teleprompter Service
+// Reconstructed from BLE captures + tag numbers confirmed by community implementation //
+// The best-documented text display protocol. Sends paginated text content.
+//
+// Service ID: 0x06-0x20 [CONFIRMED]
+// BLE: Commands on 5401, responses on 5402
+
+syntax = "proto3";
+
+package even.g2.teleprompter;
+
+// Command IDs
+// Source: BLE capture analysis
+enum TelepromptCommandId {
+  TELEPROMPT_NONE = 0;
+  TELEPROMPT_CONTROL = 1;               // [CONFIRMED] Init/start/stop
+  TELEPROMPT_FILE_LIST = 2;             // [CONFIRMED] Script list
+  TELEPROMPT_PAGE_DATA = 3;             // [CONFIRMED] Page content
+  TELEPROMPT_COMM_RESP = 4;             // [CONFIRMED] Complete marker
+  TELEPROMPT_HEART_BEAT = 5;            // [INFERRED]
+  TELEPROMPT_STATUS_NOTIFY = 6;         // [INFERRED]
+  TELEPROMPT_FILE_LIST_REQUEST = 7;     // [INFERRED] Glasses requests file list
+  TELEPROMPT_FILE_SELECT = 8;           // [INFERRED] Select a script
+  TELEPROMPT_PAGE_DATA_REQUEST = 9;     // [INFERRED] Glasses requests a page
+  TELEPROMPT_PAGE_SCROLL_SYNC = 10;     // [INFERRED] Manual scroll sync
+  TELEPROMPT_PAGE_AI_SYNC = 11;         // [INFERRED] AI-triggered scroll sync
+}
+
+// Control sub-commands
+enum TelepromptCtrlCmd {
+  TELEPROMPT_CTRL_NONE = 0;
+  TELEPROMPT_CTRL_START = 1;            // [INFERRED]
+  TELEPROMPT_CTRL_STOP = 2;             // [INFERRED]
+}
+
+// Scroll modes
+enum TelepromptMode {
+  TELEPROMPT_MODE_MANUAL = 0;           // 0x00 = manual scroll
+  TELEPROMPT_MODE_AI = 1;              // 0x01 = AI-triggered scroll
+}
+
+// Error codes
+enum TelepromptErrorCode {
+  TELEPROMPT_ERR_NONE = 0;
+  TELEPROMPT_ERR_CLOSED = 1;
+  TELEPROMPT_ERR_FAIL = 2;
+  TELEPROMPT_ERR_PD_DECODE_FAIL = 3;
+  TELEPROMPT_ERR_REPEATED_MESSAGE = 4;
+}
+
+// Top-level wrapper — tag numbers confirmed by community implementation message TeleprompterMessage {
+  uint32 type = 1;                      // [CONFIRMED] TelepromptCommandId value
+  uint32 msg_id = 2;                    // [CONFIRMED] Message ID
+
+  // Payload fields — one active based on type
+  TeleprompterInit init = 3;            // [CONFIRMED] type=1 (CONTROL/init)
+  TeleprompterList list = 4;            // [CONFIRMED] type=2 (FILE_LIST)
+  TeleprompterContent content = 5;      // [CONFIRMED] type=3 (PAGE_DATA)
+  TeleprompterComplete complete = 6;    // [CONFIRMED] type=4 (COMM_RESP/complete)
+  TeleprompterMarker marker = 13;       // [CONFIRMED] type=255 (mid-stream marker)
+}
+
+// Init message (sent first to configure display)
+message TeleprompterInit {
+  uint32 script_index = 1;              // [CONFIRMED]
+  TeleprompterDisplaySettings display = 2; // [CONFIRMED]
+}
+
+// Display settings — confirmed by community implementation message TeleprompterDisplaySettings {
+  uint32 field1 = 1;                    // [CONFIRMED] Always 1
+  uint32 field2 = 2;                    // [CONFIRMED] Always 0
+  uint32 field3 = 3;                    // [CONFIRMED] Always 0
+  uint32 display_width = 4;             // [CONFIRMED] 267 (pixels)
+  uint32 content_height = 5;            // [CONFIRMED] Total content height
+  uint32 line_height = 6;              // [CONFIRMED] 230 (units)
+  uint32 viewport_height = 7;          // [CONFIRMED] 1294 (visible area)
+  uint32 font_size = 8;               // [CONFIRMED] 5
+  uint32 scroll_mode = 9;             // [CONFIRMED] 0=manual, 1=AI
+}
+
+// Script list
+message TeleprompterList {
+  repeated TeleprompterScript scripts = 1; // [CONFIRMED]
+}
+
+message TeleprompterScript {
+  string script_id = 1;                // [CONFIRMED] e.g., "teleprompter_createdId_1766814694346"
+  string title = 2;                    // [CONFIRMED] e.g., "Telepromt Title"
+}
+
+// Page content — 10 lines per page
+message TeleprompterContent {
+  uint32 page_number = 1;              // [CONFIRMED] 0-indexed
+  uint32 line_count = 2;              // [CONFIRMED] Always 10
+  bytes text = 3;                      // [CONFIRMED] UTF-8 with \n separators
+}
+
+// Completion marker (sent after all pages)
+message TeleprompterComplete {
+  uint32 start_page = 1;              // [CONFIRMED] Always 0
+  uint32 total_pages = 2;             // [CONFIRMED]
+  uint32 partial_lines = 3;           // [CONFIRMED] Lines on last partial page
+}
+
+// Mid-stream marker (type=0xFF)
+// Required checkpoint: send after page 9, before page 10
+message TeleprompterMarker {
+  uint32 field1 = 1;                   // [CONFIRMED] Always 0
+  uint32 field2 = 2;                   // [CONFIRMED] Always 6
+}
+
+// Start state (variation of type=1)
+message TeleprompterState {
+  uint32 state = 1;                    // [CONFIRMED] 4 = START
+}
+
+// Additional messages from BLE captures (not in community proto):
+
+message TelepromptControl {
+  uint32 cmd = 1;                      // [INFERRED] TelepromptCtrlCmd
+}
+
+message TelepromptSetting {
+  // Display/behavior settings — fields TBD
+}
+
+message TelepromptHeartBeat {
+  uint64 timestamp = 1;                // [INFERRED]
+}
+
+message TelepromptCommResp {
+  uint32 err_code = 1;                 // [INFERRED] TelepromptErrorCode
+}
+
+message TelepromptStatusNotify {
+  // Fields TBD
+}
+
+message TelepromptFileInfo {
+  string file_id = 1;                  // [INFERRED]
+  string title = 2;                    // [INFERRED]
+}
+
+message TelepromptFileListRequest {
+  // Empty — glasses requests list from phone
+}
+
+message TelepromptFileSelect {
+  uint32 index = 1;                    // [INFERRED] Selected script index
+}
+
+message TelepromptPageData {
+  uint32 page_number = 1;              // Same as TeleprompterContent
+  uint32 line_count = 2;
+  bytes text = 3;
+}
+
+message TelepromptPageDataRequest {
+  uint32 page_number = 1;              // [INFERRED] Requested page
+}
+
+message TelepromptScrollSync {
+  uint32 position = 1;                 // [INFERRED] Scroll position
+}
+
+message TelepromptAISync {
+  uint32 position = 1;                 // [INFERRED] AI-determined scroll position
+}
+
+// ============================================================
+// PROTOCOL FLOW — Display Text via Teleprompter on nRF52840
+// ============================================================
+//
+// All packets use transport header: [AA][21][seq][len][01][01][06][20]
+//
+// 1. INIT (type=1):
+//    TeleprompterMessage {
+//      type = 1, msg_id = 0,
+//      init = {
+//        script_index = 0,
+//        display = {
+//          field1=1, field2=0, field3=0,
+//          display_width=267, content_height=<total>,
+//          line_height=230, viewport_height=1294,
+//          font_size=5, scroll_mode=0
+//        }
+//      }
+//    }
+//
+// 2. FILE LIST (type=2):
+//    TeleprompterMessage {
+//      type = 2, msg_id = 1,
+//      list = { scripts = [{ script_id="id_1", title="Title" }] }
+//    }
+//
+// 3. PAGE DATA (type=3, for each page):
+//    TeleprompterMessage {
+//      type = 3, msg_id = <N>,
+//      content = {
+//        page_number = <0..N>,
+//        line_count = 10,
+//        text = <UTF-8 "line1\nline2\n...line10">
+//      }
+//    }
+//
+// 4. MID-STREAM MARKER (type=255, after page 9):
+//    TeleprompterMessage { type = 255, msg_id = <N>, marker = { field1=0, field2=6 } }
+//
+// 5. COMPLETE (type=4):
+//    TeleprompterMessage {
+//      type = 4, msg_id = <N>,
+//      complete = { start_page=0, total_pages=<N>, partial_lines=<M> }
+//    }
+//
+// Text parameters:
+//   - ~25 chars per line (with line wrapping)
+//   - 10 lines per page (7 visible)
+//   - UTF-8 encoding, \n as line separator
+//   - Display width: 267px

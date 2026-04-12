@@ -1,0 +1,142 @@
+// Even Realities G2 — Even AI Service
+// Reconstructed from BLE protocol analysis
+//
+// This is the core service for the custom AI assistant pipeline.
+// Handles wake word events, AI queries, and displaying AI responses.
+//
+// Service ID: INFERRED (need BLE capture to confirm exact bytes)
+// BLE: Commands on 5401, responses/events on 5402
+//
+// TAG NUMBERS: Field numbers marked [CONFIRMED] come from BLE captures.
+// Fields marked [INFERRED] use conventional ordering — verify with BLE snoop.
+
+syntax = "proto3";
+
+package even.g2.ai;
+
+// Command IDs for the Even AI service
+// Source: BLE capture analysis
+enum EvenAICommandId {
+  EVEN_AI_CMD_NONE = 0;
+  EVEN_AI_ENTER = 1;           // Start AI session
+  EVEN_AI_EXIT = 2;            // End AI session
+  EVEN_AI_WAKE_UP = 3;         // Wake word detected (glasses -> phone)
+  // Additional command IDs likely exist for each sub-message type
+  // Need BLE capture to enumerate all values
+}
+
+// Top-level data package for the Even AI service
+// Source: BLE capture analysis
+// All fields confirmed as existing via accessor methods (get:/set:)
+message EvenAIDataPackage {
+  uint32 command_id = 1;                    // [INFERRED] EvenAICommandId
+  EvenAIConfig config = 2;                  // [INFERRED] AI configuration
+  EvenAIControl ctrl = 3;                   // [INFERRED] Control (enter/exit/wakeup)
+  EvenAIReplyInfo reply_info = 4;           // [INFERRED] AI response text to display
+  EvenAIAskInfo ask_info = 5;               // [INFERRED] User's question/query
+  EvenAIAnalyseInfo analyse_info = 6;       // [INFERRED] Analysis data
+  EvenAIPromptInfo prompt_info = 7;         // [INFERRED] Prompt configuration
+  EvenAISkillInfo skill_info = 8;           // [INFERRED] Skill routing (navigate, translate, etc.)
+  EvenAIVADInfo vad_info = 9;               // [INFERRED] Voice Activity Detection info
+  EvenAIHeartbeat heartbeat = 10;           // [INFERRED] Keep-alive
+  EvenAIEvent event = 11;                   // [INFERRED] AI events
+  EvenAISentiment sentiment = 12;           // [INFERRED] Sentiment analysis data
+  EvenAICommRsp comm_rsp = 13;             // [INFERRED] Command response/ack
+}
+
+// AI session control
+message EvenAIControl {
+  uint32 action = 1;           // ENTER, EXIT, WAKE_UP
+  // Additional fields TBD from BLE capture
+}
+
+// AI response to display on glasses
+// This is the key message for sending custom AI responses
+// App method: ProtoAiExt|sendAIReplay
+message EvenAIReplyInfo {
+  string text = 1;             // [INFERRED] Response text (UTF-8)
+  bool is_final = 2;           // [INFERRED] Whether this is the final chunk
+  uint32 sequence = 3;         // [INFERRED] Sequence number for streaming
+  // Additional fields TBD
+}
+
+// User's spoken question (after STT)
+message EvenAIAskInfo {
+  string text = 1;             // [INFERRED] Transcribed question text
+  // Additional fields TBD
+}
+
+// AI configuration
+message EvenAIConfig {
+  string ai_model = 1;        // [INFERRED] AI model identifier
+  // agcConfig, speechEnhanceConfig found as related fields
+}
+
+// Analysis information
+message EvenAIAnalyseInfo {
+  // Fields TBD from BLE capture
+}
+
+// Prompt configuration
+message EvenAIPromptInfo {
+  // Fields TBD from BLE capture
+}
+
+// Skill routing (maps AI intents to device actions)
+message EvenAISkillInfo {
+  string skill_id = 1;        // [INFERRED] Skill identifier
+  // Skills include: navigate, translate, etc.
+}
+
+// Voice Activity Detection status
+message EvenAIVADInfo {
+  uint32 vad_status = 1;      // [INFERRED] VAD state
+}
+
+// Keep-alive heartbeat
+message EvenAIHeartbeat {
+  uint64 timestamp = 1;       // [INFERRED]
+}
+
+// AI-related events
+message EvenAIEvent {
+  // Fields TBD from BLE capture
+}
+
+// Sentiment analysis
+message EvenAISentiment {
+  // Fields TBD from BLE capture
+}
+
+// Command response / acknowledgment
+message EvenAICommRsp {
+  uint32 err_code = 1;        // [INFERRED] Error code (0 = success)
+}
+
+// ============================================================
+// PROTOCOL FLOW — Custom AI Assistant on nRF52840
+// ============================================================
+//
+// 1. RECEIVING WAKE WORD EVENT:
+//    - Subscribe to 5402 notifications
+//    - Filter packets with Even AI service ID
+//    - Decode EvenAIDataPackage with command_id = EVEN_AI_WAKE_UP
+//
+// 2. ACKNOWLEDGE WAKE-UP:
+//    - Build EvenAIControl { action = ACK/ENTER }
+//    - Wrap in EvenAIDataPackage { command_id = EVEN_AI_ENTER, ctrl = ... }
+//    - Serialize to protobuf, wrap in transport header, send on 5401
+//
+// 3. CAPTURE AUDIO:
+//    - Audio stream starts automatically after wake-up ack
+//    - LC3 frames arrive on 5402 (or 7402 — needs confirmation)
+//    - Decode with liblc3: 10ms frames, 16kHz, 16-bit mono PCM
+//
+// 4. SEND AI RESPONSE:
+//    - Build EvenAIReplyInfo { text = "your response" }
+//    - Wrap in EvenAIDataPackage { command_id = REPLY, reply_info = ... }
+//    - Serialize + transport header + send on 5401
+//    - Glasses display the text
+//
+// 5. END SESSION:
+//    - Send EvenAIDataPackage { command_id = EVEN_AI_EXIT }
