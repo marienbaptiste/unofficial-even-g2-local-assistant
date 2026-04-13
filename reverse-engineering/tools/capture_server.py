@@ -192,7 +192,7 @@ async def serve_ui():
     index = STATIC_DIR / "index.html"
     if not index.exists():
         raise HTTPException(status_code=404, detail="UI not found. Place index.html in static/")
-    return FileResponse(str(index))
+    return FileResponse(str(index), headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @app.get("/api/status")
@@ -405,6 +405,32 @@ async def delete_all_captures():
     if SIGNAL_FILE.exists():
         SIGNAL_FILE.unlink()
     return {"deleted": deleted}
+
+
+@app.delete("/api/captures/{capture_id}")
+async def delete_capture(capture_id: str):
+    """Delete a single capture (result JSON + raw log + progress entry)."""
+    deleted = []
+    # Delete result JSON
+    result_file = RESULTS_DIR / f"{capture_id}.json"
+    if result_file.exists():
+        result_file.unlink()
+        deleted.append(str(result_file.name))
+    # Delete raw log (find by capture_id prefix in filename)
+    for f in CAPTURES_DIR.iterdir():
+        if f.is_file() and capture_id in f.name:
+            f.unlink()
+            deleted.append(str(f.name))
+    # Remove from progress.json
+    progress = _load_progress()
+    before = len(progress.get("captures", []))
+    progress["captures"] = [c for c in progress.get("captures", []) if c.get("id") != capture_id]
+    if len(progress["captures"]) < before:
+        _save_progress(progress)
+        deleted.append("progress entry")
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Capture {capture_id} not found")
+    return {"capture_id": capture_id, "deleted": deleted}
 
 
 @app.get("/api/progress")
