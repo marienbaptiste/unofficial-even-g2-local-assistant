@@ -1,0 +1,154 @@
+// Even Realities G2 — Display / Image Transfer Service
+// Reconstructed from BLE protocol analysis
+//
+// Handles page lifecycle, image rendering, and file transfer to the display.
+//
+// Service ID: 0x04-0x20 for Display Wake [CONFIRMED]
+//             0x0E-0x20 for Display Config [CONFIRMED]
+// BLE: Page commands on 5401, image data on 6401/6402, acks on 5402
+//
+// Display specs:
+//   - Total display area: 400x200 pixels (rendered as 4 quad tiles of 200x100)
+//   - Teleprompter width: 267px (text rendering mode)
+//   - Color: 4-bit indexed grayscale (16 levels)
+//   - Format: BMP with 118-byte header, bottom-up rows, padded to 4-byte boundary
+
+syntax = "proto3";
+
+package even.g2.display;
+
+// ============================================
+// Display Wake (Service 0x04-20)
+// ============================================
+
+// Community confirms: type=1, msg_id=2, settings=3
+message DisplayWake {
+  uint32 type = 1;                     // [CONFIRMED]
+  uint32 msg_id = 2;                   // [CONFIRMED]
+  DisplayWakeSettings settings = 3;    // [CONFIRMED]
+}
+
+message DisplayWakeSettings {
+  uint32 field1 = 1;                   // [CONFIRMED] 1
+  uint32 field2 = 2;                   // [CONFIRMED] 1
+  uint32 field3 = 3;                   // [CONFIRMED] 5
+  uint32 field5 = 5;                   // [CONFIRMED] 1 (note: field4 skipped)
+}
+
+// ============================================
+// Display Config (Service 0x0E-20)
+// ============================================
+
+// Community confirms: type=1, msg_id=2, settings=4
+message DisplayConfig {
+  uint32 type = 1;                     // [CONFIRMED] value=2
+  uint32 msg_id = 2;                   // [CONFIRMED]
+  DisplaySettings settings = 4;       // [CONFIRMED] (field 4, not 3)
+}
+
+message DisplaySettings {
+  uint32 enabled = 1;                  // [CONFIRMED]
+  repeated DisplayRegion regions = 2;  // [CONFIRMED]
+  uint32 field3 = 3;                   // [CONFIRMED]
+}
+
+message DisplayRegion {
+  uint32 region_id = 1;               // [CONFIRMED] 2, 3, 4, 5, 6
+  uint32 param1 = 2;                  // [CONFIRMED] Varies
+  float param2 = 3;                   // [CONFIRMED] Float (IEEE 754)
+  float param3 = 4;                   // [CONFIRMED] Float
+  uint32 param4 = 5;                  // [CONFIRMED] 0
+  uint32 param5 = 6;                  // [CONFIRMED] 0
+}
+
+// ============================================
+// Page Lifecycle Commands
+// ============================================
+// These are sent on 5401, acks received on 5402
+
+// Packet types (from BLE captures):
+//   APP_REQUEST_CREATE_STARTUP_PAGE_PACKET  — create display page
+//   OS_RESPONSE_CREATE_STARTUP_PAGE_PACKET  — ack page creation
+//   APP_UPDATE_IMAGE_RAW_DATA_PACKET        — send image data
+//   OS_RESPONSE_IMAGE_RAW_DATA_PACKET       — ack image received
+//   APP_REQUEST_REBUILD_PAGE_PACKET         — refresh/rebuild page
+//   OS_RESPONSE_REBUILD_PAGE_PACKET         — ack rebuild
+//   APP_REQUEST_SHUTDOWN_PAGE_PACKET        — close/clear page
+//   OS_RESPONSE_SHUTDOWN_PAGE_PACKET        — ack shutdown
+
+// NOTE: Image/page lifecycle commands are now fully documented in evenhub.proto
+// The EvenHub service (0xE0) handles:
+//   Cmd=0: CreateStartUpPageContainer (text + image containers)
+//   Cmd=3: ImageRawDataUpdate (fragmented BMP push, 4096B chunks, 200ms delay)
+//   Cmd=5: TextContainerUpgrade (partial text update)
+//   Cmd=7: RebuildPageContainer (refresh page, same struct as create)
+//   Cmd=9: ShutDownContainer (close page)
+// See evenhub.proto for complete field definitions.
+
+// ============================================
+// File Service (for large image transfers)
+// ============================================
+
+// File service commands
+//   EVEN_FILE_SERVICE_CMD_SEND_START        — initiate transfer
+//   EVEN_FILE_SERVICE_CMD_SEND_DATA         — send data chunk
+//   EVEN_FILE_SERVICE_CMD_SEND_RESULT_CHECK — verify transfer
+
+// File service responses
+//   EVEN_FILE_SERVICE_RSP_SUCCESS           — transfer OK
+//   EVEN_FILE_SERVICE_RSP_DATA_CRC_ERR      — CRC mismatch
+//   EVEN_FILE_SERVICE_RSP_FLASH_WRITE_ERR   — flash error
+//   EVEN_FILE_SERVICE_RSP_NO_RESOURCES      — no memory
+//   EVEN_FILE_SERVICE_RSP_TIMEOUT           — timed out
+
+// Large file transfer package
+message EvenSendFileBigPackage {
+  uint32 cmd = 1;             // [INFERRED] File service command
+  bytes data = 2;             // [INFERRED] Data chunk
+  uint32 offset = 3;          // [INFERRED] Byte offset in file
+  uint32 total_len = 4;       // [INFERRED] Total file length
+  uint32 crc = 5;             // [INFERRED] CRC32 of data
+}
+
+// ============================================================
+// 4-BIT GRAYSCALE BMP ENCODING — nRF52840 Implementation
+// ============================================================
+//
+// BMP Header (14 bytes):
+//   'B','M'          — magic
+//   uint32 file_size — total file size
+//   uint16 reserved1 = 0
+//   uint16 reserved2 = 0
+//   uint32 offset = 118  — pixel data offset (14 + 40 + 64 palette bytes)
+//
+// BMP Info Header (40 bytes):
+//   uint32 header_size = 40
+//   int32  width = 267
+//   int32  height = <negative for top-down>
+//   uint16 planes = 1
+//   uint16 bpp = 4       — 4 bits per pixel
+//   uint32 compression = 0
+//   uint32 image_size = <row_bytes * height>
+//   int32  x_ppm = 0
+//   int32  y_ppm = 0
+//   uint32 colors_used = 16
+//   uint32 colors_important = 16
+//
+// Color Palette (64 bytes):
+//   16 entries × 4 bytes (B, G, R, 0):
+//   { 0x00,0x00,0x00,0 }, { 0x11,0x11,0x11,0 }, ..., { 0xFF,0xFF,0xFF,0 }
+//
+// Pixel Data:
+//   4 bits per pixel, 2 pixels per byte
+//   Row size: ((width + 7) / 8 * 4) rounded up to 4-byte boundary
+//   = ((267 * 4 + 31) / 32) * 4 = 136 bytes per row
+//
+// PROTOCOL FLOW:
+//   1. Create 4-bit grayscale BMP (267px wide)
+//   2. Optionally compress with compressBmpData
+//   3. Send CREATE_STARTUP_PAGE on 5401
+//   4. Wait for ack on 5402
+//   5. Send image data on 6401/6402:
+//      - Small: direct APP_UPDATE_IMAGE_RAW_DATA_PACKET
+//      - Large: file service (SEND_START -> SEND_DATA chunks -> RESULT_CHECK)
+//   6. Wait for ack on 5402

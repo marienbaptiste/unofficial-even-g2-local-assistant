@@ -1,0 +1,194 @@
+// Even Realities G2 — Even AI Service (Voice Assistant)
+// Reconstructed from BLE capture analysis — 2026-04-12
+//
+// Service ID: 0x07 [CONFIRMED]
+//   0x07-0x20 = phone->glasses commands
+//   0x07-0x00 = glasses->phone responses (ack/echo)
+//   0x07-0x01 = glasses->phone events (wake word, audio progress)
+//
+// BLE: Commands on 5401 (handle 0x0842), responses/events on 5402 (handle 0x0844)
+//
+// TAG NUMBERS: All field numbers [CONFIRMED] from BLE capture capture_20260412_225605.
+
+syntax = "proto3";
+
+package even.g2.ai;
+
+// ============================================================
+// TOP-LEVEL MESSAGE
+// ============================================================
+
+// Every packet on service 0x07 uses this envelope.
+// The `type` field selects which payload field is populated.
+message EvenAIPacket {
+  uint32 type = 1;    // [CONFIRMED] Message type (see EvenAIType enum)
+  uint32 seq = 2;     // [CONFIRMED] Global sequence number, increments across all types
+
+  // Payload — one field per type. Field number = type + 2 for types 1-5.
+  VoiceState voice_state = 3;           // [CONFIRMED] type=1 — session lifecycle (wake/listen/end)
+  TranscriptionDone transcription_done = 4; // [CONFIRMED] type=2 — signals transcription complete
+  Transcription transcription = 5;      // [CONFIRMED] type=3 — live speech-to-text streaming
+  QuerySent query_sent = 6;             // [CONFIRMED] type=4 — query sent to AI backend
+  AIResponse ai_response = 7;          // [CONFIRMED] type=5 — AI response text chunks
+
+  // Gap: fields 8-9 likely exist for types 6-7 (unknown)
+
+  AudioEvent audio_event = 10;         // [CONFIRMED] type=8 — TTS audio playback events
+  ScrollControl scroll = 11;           // [CONFIRMED] type=9 — display scroll during AI response
+  // field 12 unknown
+  ConfigControl config = 13;           // [CONFIRMED] type=10 — initial config on session start
+}
+
+// Message types observed in BLE captures
+enum EvenAIType {
+  EVEN_AI_TYPE_UNKNOWN = 0;
+  VOICE_STATE_TYPE = 1;          // [CONFIRMED] Session lifecycle events
+  TRANSCRIPTION_DONE_TYPE = 2;   // [CONFIRMED] End of transcription
+  TRANSCRIPTION_TYPE = 3;        // [CONFIRMED] Live transcription updates
+  QUERY_SENT_TYPE = 4;           // [CONFIRMED] Query dispatched to AI
+  AI_RESPONSE_TYPE = 5;          // [CONFIRMED] AI response text chunks
+  // 6, 7 — not observed
+  AUDIO_EVENT_TYPE = 8;          // [CONFIRMED] TTS audio progress (events only)
+  SCROLL_CONTROL_TYPE = 9;       // [CONFIRMED] Display scroll commands
+  CONFIG_TYPE = 10;              // [CONFIRMED] Configuration
+}
+
+// ============================================================
+// PAYLOAD MESSAGES
+// ============================================================
+
+// type=1: Voice session state changes
+// Sent as CMD (phone->glasses) and EVT (glasses->phone)
+message VoiceState {
+  uint32 state = 1;   // [CONFIRMED] See VoiceStateEnum
+}
+
+enum VoiceStateEnum {
+  VOICE_STATE_UNKNOWN = 0;
+  VOICE_STATE_LISTENING = 1;    // [CONFIRMED] Mic active, recording speech
+  // 2 = not observed in events, possibly PROCESSING
+  VOICE_STATE_BOUNDARY = 3;     // [CONFIRMED] Session start (wake word) or end (return to idle)
+}
+
+// type=2: Transcription complete signal
+// Phone->glasses after final transcription update
+message TranscriptionDone {
+  uint32 status = 1;   // [CONFIRMED] Observed: 1 = done
+}
+
+// type=3: Live speech-to-text transcription
+// Phone->glasses, progressive updates as user speaks
+// Text replaces previous update (full text each time, not deltas)
+message Transcription {
+  uint32 unknown1 = 1;    // [CONFIRMED] Always 0 in captures
+  uint32 unknown2 = 2;    // [CONFIRMED] Always 0 in captures
+  string text = 4;        // [CONFIRMED] Current transcription text (UTF-8)
+  // Note: field 3 not observed — may be language or confidence
+}
+
+// type=4: Query sent to AI backend
+// Phone->glasses, signals the AI is processing
+message QuerySent {
+  // [CONFIRMED] Empty payload — acts as a pure signal
+}
+
+// type=5: AI response text chunks
+// Phone->glasses, streamed in multiple packets
+message AIResponse {
+  uint32 unknown1 = 1;    // [CONFIRMED] Always 0 in captures
+  uint32 unknown2 = 2;    // [CONFIRMED] Always 0 in captures
+  string text = 4;        // [CONFIRMED] Response text chunk (UTF-8, may contain markdown **)
+  // field 3, 5 not observed
+  uint32 is_done = 6;     // [CONFIRMED] 0 = more chunks coming, 1 = final (empty text + done=1)
+}
+
+// type=8: TTS audio playback events (events only, glasses->phone)
+// Appears after AI response is fully sent, during audio playback
+message AudioEvent {
+  uint32 status = 1;   // [CONFIRMED] 2 = audio started, 1 = audio chunk/progress
+}
+
+// type=9: Display scroll control
+// Sent frequently during AI response display (phone->glasses)
+message ScrollControl {
+  uint32 value = 1;    // [CONFIRMED] Scroll parameter (observed values: 1)
+}
+
+// type=10: Configuration
+// Sent at beginning of session and on initial connect
+message ConfigControl {
+  uint32 param1 = 1;   // [CONFIRMED] Observed values vary (e.g., 0, other)
+  // Additional fields in 4-byte payloads not fully decoded
+}
+
+// ============================================================
+// PROTOCOL FLOW — "Hey Even" Full Interaction (CONFIRMED)
+// Captured: 2026-04-12 capture_20260412_225605
+// ============================================================
+//
+// PHASE 1: WAKE WORD DETECTION
+//   1. [EVT 0x07-0x01] type=1, VoiceState{state=3}
+//      Glasses detect "Hey Even" and fire BOUNDARY event
+//
+//   2. [CMD 0x07-0x20] type=10, ConfigControl{...}
+//      Phone sends config to glasses (4-byte payload)
+//      [RSP 0x07-0x00] Glasses ack
+//
+//   3. [EVT 0x07-0x01] type=1, VoiceState{state=1}
+//      Glasses enter LISTENING state — mic is active
+//
+//   4. [CMD 0x07-0x20] type=1, VoiceState{state=3}
+//      Phone acknowledges wake with BOUNDARY
+//      [RSP 0x07-0x00] Glasses ack
+//
+//   5. [CMD 0x07-0x20] type=1, VoiceState{state=1}
+//      Phone confirms LISTENING mode
+//      [RSP 0x07-0x00] Glasses ack
+//
+// PHASE 2: SPEECH TRANSCRIPTION (streaming)
+//   Audio captured on mic, sent to phone, transcribed by cloud STT.
+//   Phone sends progressive updates to glasses display.
+//
+//   6. [CMD 0x07-0x20] type=3, Transcription{text="what is"}
+//   7. [CMD 0x07-0x20] type=3, Transcription{text="what is dump"}
+//   8. [CMD 0x07-0x20] type=3, Transcription{text="what is dominato right now"}
+//   9. [CMD 0x07-0x20] type=3, Transcription{text="What is Dominato right now in Geneva?"}
+//      Each gets [RSP 0x07-0x00] ack with empty payload
+//
+// PHASE 3: AI QUERY
+//  10. [CMD 0x07-0x20] type=2, TranscriptionDone{status=1}
+//      Signals end of transcription
+//
+//  11. [CMD 0x07-0x20] type=4, QuerySent{}
+//      Signals query dispatched to AI backend
+//
+// PHASE 4: AI RESPONSE (streaming)
+//  12. [CMD 0x07-0x20] type=5, AIResponse{text="Dominato is likely a reference to..."}
+//  13. [CMD 0x07-0x20] type=5, AIResponse{text=", which is located in the heart..."}
+//  14. [CMD 0x07-0x20] type=5, AIResponse{text=" management services for..."}
+//  15. [CMD 0x07-0x20] type=5, AIResponse{text=" service in Geneva where..."}
+//  16. [CMD 0x07-0x20] type=5, AIResponse{text="", is_done=1}
+//      Final empty chunk with done flag
+//
+// PHASE 5: TTS AUDIO PLAYBACK
+//  17. [EVT 0x07-0x01] type=8, AudioEvent{status=2}
+//      TTS audio playback starts
+//  18. [EVT 0x07-0x01] type=8, AudioEvent{status=1} (x20+)
+//      Audio progress events during playback
+//
+// PHASE 6: SCROLL (concurrent with phases 4-5)
+//      [CMD 0x07-0x20] type=9, ScrollControl{...} — many packets
+//      Display auto-scrolls through AI response text
+//
+// PHASE 7: SESSION END
+//  19. [EVT 0x07-0x01] type=1, VoiceState{state=3}
+//      Glasses return to IDLE — BOUNDARY event
+//  20. [CMD 0x07-0x20] type=1, VoiceState{state=3}
+//      Phone confirms session end
+//
+// NOTES:
+// - Audio (mic) streams on UUID 7402 (handle 0x0864), NOT on the transport channel
+// - TTS audio is played by the glasses; only events are sent over BLE
+// - Sequence numbers are global across all types within a session
+// - Every CMD gets a RSP ack (often with empty payload)
+// - The phone drives the entire flow; glasses just fire events

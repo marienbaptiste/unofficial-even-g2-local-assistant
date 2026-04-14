@@ -1,0 +1,136 @@
+// Even Realities G2 — Glasses Case, Quick List, Menu, and Other Services
+// Reconstructed from BLE protocol analysis
+//
+// Minor services grouped together.
+
+syntax = "proto3";
+
+package even.g2.misc;
+
+// ============================================
+// Glasses Case Service
+// ============================================
+// Source: GlassesCaseDataPackage 
+// Source: eGlassesCaseCommandId enum
+
+message GlassesCaseDataPackage {
+  uint32 command_id = 1;      // [INFERRED]
+  GlassesCaseInfo case_info = 2; // [INFERRED]
+}
+
+message GlassesCaseInfo {
+  // Battery level, charging state, lid open/closed, etc.
+  // Fields TBD from BLE capture
+}
+
+// ============================================
+// Quick List Service
+// ============================================
+// Source: eQuicklistCommandId enum
+// Display task/note items that user scrolls through
+
+message QuickListDataPackage {
+  uint32 command_id = 1;      // [INFERRED]
+  repeated QuickListItem items = 2; // [INFERRED]
+}
+
+message QuickListItem {
+  string text = 1;            // [INFERRED] Item text
+  bool completed = 2;         // [INFERRED] Check state
+}
+
+// ============================================
+// Menu Service
+// ============================================
+// Source: Menu_Cmd_List, Menu_Item_Ctx
+
+message MenuDataPackage {
+  uint32 command_id = 1;      // [INFERRED]
+  repeated MenuItem items = 2; // [INFERRED]
+}
+
+message MenuItem {
+  string label = 1;           // [INFERRED]
+  uint32 action = 2;          // [INFERRED]
+}
+
+// ============================================
+// Module Configure Service
+// ============================================
+// Source: module_configure_Cmd_list enum
+
+message ModuleConfigureDataPackage {
+  uint32 command_id = 1;      // [INFERRED]
+  bytes config_data = 2;      // [INFERRED]
+}
+
+// ============================================
+// Onboarding Service (0x10)
+// ============================================
+// MOVED to g2_setting.proto — confirmed: cmd=1, field3={processId=4} to skip onboarding
+
+// ============================================
+// Logger Service
+// ============================================
+
+message LoggerDataPackage {
+  uint32 command_id = 1;      // [INFERRED]
+  bytes log_data = 2;         // [INFERRED]
+}
+
+// ============================================
+// Sync Info Service (0x80-00)
+// ============================================
+
+message SyncInfoDataPackage {
+  uint32 command_id = 1;      // [INFERRED]
+  // Sync state data — TBD
+}
+
+// ============================================
+// OTA / Firmware Update
+// ============================================
+// Source: eOTATransmitCID enum
+// Uses Even File Service (eEvenFileServiceType) for data transfer
+
+// File service types
+enum EvenFileServiceType {
+  EVEN_FILE_SERVICE_TYPE_NONE = 0;
+  EVEN_FILE_SERVICE_CMD_SEND_START = 1;        // [INFERRED]
+  EVEN_FILE_SERVICE_CMD_SEND_DATA = 2;         // [INFERRED]
+  EVEN_FILE_SERVICE_CMD_SEND_RESULT_CHECK = 3; // [INFERRED]
+}
+
+// File service response codes
+enum EvenFileServiceRsp {
+  EVEN_FILE_SERVICE_RSP_SUCCESS = 0;
+  EVEN_FILE_SERVICE_RSP_DATA_CRC_ERR = 1;     // [INFERRED]
+  EVEN_FILE_SERVICE_RSP_FLASH_WRITE_ERR = 2;  // [INFERRED]
+  EVEN_FILE_SERVICE_RSP_NO_RESOURCES = 3;      // [INFERRED]
+  EVEN_FILE_SERVICE_RSP_TIMEOUT = 4;           // [INFERRED]
+}
+
+// Device configuration protocol
+// Source: dev_config_protocol.pb.dart
+message DevConfigProtocol {
+  // Device-level configuration — fields TBD
+}
+
+// Device settings
+// Source: dev_settings.pb.dart
+message DevSettings {
+  uint32 brightness = 1;      // [INFERRED] Display brightness
+  // Additional settings TBD
+}
+
+// Device pair manager
+// Source: dev_pair_manager.pb.dart
+message DevPairManager {
+  // Pairing state — fields TBD
+}
+
+// Device information
+// Source: dev_infomation.pb.dart (note: typo in original)
+message DevInformation {
+  // Hardware/firmware info — fields TBD
+}

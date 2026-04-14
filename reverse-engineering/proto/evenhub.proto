@@ -1,0 +1,198 @@
+// Even Realities G2 — EvenHub Service (0xE0)
+// Reconstructed from BLE capture analysis + protocol decode
+//
+// EvenHub is the primary display/interaction service for third-party apps.
+// All commands use the same top-level wrapper (EvenHubMainMsgCtx).
+//
+// Service ID: 0xE0-0x00 (response), 0xE0-0x20 (command)
+// BLE: Commands on 5401 (write), responses on 5402 (notify)
+
+syntax = "proto3";
+
+package even.g2.evenhub;
+
+// ============================================
+// Top-level EvenHub message wrapper
+// ============================================
+
+message EvenHubMainMsgCtx {
+  int32 cmd = 1;                                    // Command ID (see CmdType enum)
+  int32 magic_random = 2;                           // Random value for request/response matching
+
+  // Command payloads — field number determines which command
+  CreateStartUpPageContainer create_page = 3;       // Cmd=0: Create initial page
+  ImageRawDataUpdate image_update = 5;              // Cmd=3: Push image data to container
+  RebuildPageContainer rebuild_page = 7;            // Cmd=7: Rebuild/refresh page (same struct as create)
+  TextContainerUpgrade text_update = 9;             // Cmd=5: Update text in container
+  ShutDownContainer shutdown = 11;                  // Cmd=9: Close page
+  SendDeviceEvent device_event = 13;                // Cmd=2: Response — touch/lifecycle events from glasses
+  HeartBeatPacket heartbeat = 14;                   // Cmd=12: Keep-alive
+  AudioCtrCmd audio_control = 18;                   // Cmd=15: Enable/disable microphone
+}
+
+// Command IDs (field 1 values)
+enum CmdType {
+  CREATE_STARTUP_PAGE = 0;
+  OS_NOTIFY_EVENT_TO_APP = 2;       // Response: glasses -> phone events
+  UPDATE_IMAGE_RAW_DATA = 3;
+  UPDATE_TEXT_DATA = 5;
+  REBUILD_PAGE = 7;
+  SHUTDOWN_PAGE = 9;
+  HEARTBEAT = 12;
+  AUDIO_CONTROL = 15;
+}
+
+// ============================================
+// Page creation / rebuild
+// ============================================
+
+message CreateStartUpPageContainer {
+  int32 container_total_num = 1;                    // Total containers in page (max 12: 8 text + 4 image)
+  repeated TextContainerProperty text_containers = 3;
+  repeated ImageContainerProperty image_containers = 4;
+}
+
+// RebuildPageContainer uses the same structure as CreateStartUpPageContainer
+// (field 7 in top-level, same proto layout)
+
+message RebuildPageContainer {
+  int32 container_total_num = 1;
+  repeated TextContainerProperty text_containers = 3;
+  repeated ImageContainerProperty image_containers = 4;
+}
+
+// ============================================
+// Container properties
+// ============================================
+
+message TextContainerProperty {
+  int32 x_position = 1;                            // X offset in pixels
+  int32 y_position = 2;                            // Y offset in pixels
+  int32 width = 3;                                  // Container width
+  int32 height = 4;                                 // Container height
+  int32 border_width = 5;                           // Border stroke width
+  int32 border_color = 6;                           // Border color value
+  int32 border_radius = 7;                          // Corner radius
+  int32 padding_length = 8;                         // Inner padding
+  int32 container_id = 9;                           // Unique ID for this container
+  string container_name = 10;                       // Optional name
+  int32 is_event_capture = 11;                      // 1 = receives touch events, 0 = passive
+  string content = 12;                              // Initial text content
+}
+
+message ImageContainerProperty {
+  int32 x_position = 1;                            // X offset in pixels
+  int32 y_position = 2;                            // Y offset in pixels
+  int32 width = 3;                                  // Image width (20-288px)
+  int32 height = 4;                                 // Image height (20-144px)
+  int32 container_id = 5;                           // Unique ID for this container
+  string container_name = 6;                        // Optional name
+}
+
+// ============================================
+// Text update (partial)
+// ============================================
+
+message TextContainerUpgrade {
+  int32 container_id = 1;                           // Target container
+  int32 content_offset = 3;                         // Byte offset in existing content
+  int32 content_length = 4;                         // Length of new content
+  string content = 5;                               // New text to insert/replace
+}
+
+// ============================================
+// Image data push (fragmented)
+// ============================================
+// Images are sent in 4096-byte fragments with 200ms delay between sends.
+// Format: 4-bit indexed BMP, 16-level grayscale, 118-byte header, bottom-up rows.
+
+message ImageRawDataUpdate {
+  int32 container_id = 1;                           // Target image container
+  string container_name = 2;                        // Container name
+  int32 map_session_id = 3;                         // Session identifier
+  int32 map_total_size = 4;                         // Total image size in bytes
+  int32 compress_mode = 5;                          // 0 = uncompressed
+  int32 map_fragment_index = 6;                     // Fragment index (0-based)
+  int32 map_fragment_packet_size = 7;               // Size of this fragment (max 4096)
+  bytes map_raw_data = 8;                           // Raw image bytes for this fragment
+}
+
+// ============================================
+// Page shutdown
+// ============================================
+
+message ShutDownContainer {
+  int32 exit_mode = 1;                              // 0 = immediate, 1 = ask user
+}
+
+// ============================================
+// Heartbeat (every 5 seconds)
+// ============================================
+
+message HeartBeatPacket {
+  int32 cnt = 1;                                    // Optional counter
+}
+
+// ============================================
+// Audio control — THE MIC START/STOP COMMAND
+// ============================================
+
+message AudioCtrCmd {
+  int32 audio_func_en = 1;                          // 1 = enable mic, 0 = disable mic
+}
+
+// ============================================
+// Device events (glasses -> phone, Cmd=2)
+// ============================================
+
+message SendDeviceEvent {
+  ListEvent list_event = 1;                         // List/scroll interaction
+  TextEvent text_event = 2;                         // Text container interaction
+  SysEvent sys_event = 3;                           // System/lifecycle events
+}
+
+message ListEvent {
+  // List container touch events
+  int32 container_id = 1;                           // Which list container
+  int32 selected_index = 2;                         // Selected item index
+  OsEventType event_type = 3;                       // Event type
+}
+
+message TextEvent {
+  // Text container touch events
+  int32 container_id = 1;                           // Which text container
+  OsEventType event_type = 2;                       // Event type
+}
+
+message SysEvent {
+  // System/lifecycle events
+  OsEventType event_type = 1;                       // Event type
+}
+
+// Touch/lifecycle event types
+enum OsEventType {
+  CLICK = 0;                    // Single tap
+  SCROLL_TOP = 1;               // Swipe down (Android) / swipe up (iOS) — NOTE: direction swapped!
+  SCROLL_BOTTOM = 2;            // Swipe up (Android) / swipe down (iOS) — NOTE: direction swapped!
+  DOUBLE_CLICK = 3;             // Double tap
+  FOREGROUND_ENTER = 4;         // App page gained focus
+  FOREGROUND_EXIT = 5;          // App page lost focus
+  ABNORMAL_EXIT = 6;            // Unexpected page close
+  SYSTEM_EXIT = 7;              // System forced page close
+}
+
+// ============================================
+// Quad-Tile Display Layout (400x200 total)
+// ============================================
+// Stock Even app uses 4 image containers for full-screen rendering:
+//   Container 10: (0, 0)     200x100  — top-left
+//   Container 11: (200, 0)   200x100  — top-right
+//   Container 12: (0, 100)   200x100  — bottom-left
+//   Container 13: (200, 100) 200x100  — bottom-right
+//
+// Images are 4-bit indexed grayscale BMP:
+//   - 118-byte header (14 file + 40 DIB + 64 color table)
+//   - Color table: 16 entries [0, 17, 34, 51, ..., 238, 255]
+//   - 2 pixels per byte (high nibble first)
+//   - Row padding to 4-byte boundary
+//   - Bottom-up row order (row 0 = bottom of image)

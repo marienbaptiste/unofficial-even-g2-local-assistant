@@ -1,0 +1,18 @@
+name: even_g2_sdk
+description: Flutter SDK for Even G2 smart glasses BLE protocol. Provides scanning, connection, authentication, display control, mic audio streaming, gesture events, and settings.
+version: 0.3.0
+homepage: https://github.com/marienbaptiste/unofficial-even-g2-local-assistant
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.10.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  universal_ble: ^1.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0

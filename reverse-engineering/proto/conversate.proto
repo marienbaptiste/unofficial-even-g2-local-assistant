@@ -1,0 +1,160 @@
+// Even Realities G2 — Conversate Service (Real-Time Transcription)
+// Reconstructed from BLE protocol analysis
+//
+// Displays live transcription text on glasses — ideal for streaming AI responses.
+//
+// Service ID: 0x0B-0x20 (phone→glasses), 0x0B-0x00 (glasses→phone) [CONFIRMED from BLE captures]
+// BLE: Commands on 5401, responses on 5402
+
+syntax = "proto3";
+
+package even.g2.conversate;
+
+// Command IDs
+// Source: BLE capture analysis
+enum ConversateCommandId {
+  CONVERSATE_NONE = 0;
+  CONVERSATE_CONTROL = 1;              // Start/stop session
+  CONVERSATE_SETTINGS = 2;             // [INFERRED] Session settings
+  CONVERSATE_TRANSCRIBE_DATA = 3;      // [INFERRED] Transcription text
+  CONVERSATE_KEYPOINT_DATA = 4;        // [INFERRED] Key points
+  CONVERSATE_TAG_DATA = 5;             // [INFERRED] Tags
+  CONVERSATE_TAG_TRACKING_DATA = 6;    // [INFERRED] Tag tracking
+  CONVERSATE_TITLE_DATA = 7;           // [INFERRED] Title
+  CONVERSATE_HEART_BEAT = 8;           // [INFERRED] Heartbeat
+  CONVERSATE_COMM_RESP = 9;            // [INFERRED] Command response
+  CONVERSATE_STATUS_NOTIFY = 10;       // [INFERRED] Status notification
+}
+
+// Control commands
+enum ConversateCtrlCmd {
+  CONVERSATE_CTRL_NONE = 0;
+  CONVERSATE_CTRL_START = 1;           // [INFERRED]
+  CONVERSATE_CTRL_STOP = 2;            // [INFERRED]
+}
+
+// Error codes
+enum ConversateErrorCode {
+  CONVERSATE_SUCCESS = 0;
+  CONVERSATE_ERR_FAIL = 1;            // [INFERRED]
+  CONVERSATE_ERR_NETWORK = 2;         // [INFERRED]
+}
+
+// Tag types
+enum ConversateTagType {
+  CONVERSATE_TAG_NONE = 0;
+  // Additional tag types TBD
+}
+
+// Top-level data package
+// Source: ConversateDataPackage class 
+// CONFIRMED from BLE capture: field1=type, field2=seq, field8=text message
+// Observed types: 1=init, 6=data, 0xFF=heartbeat/marker, 0xA2=glasses ack
+message ConversateDataPackage {
+  uint32 command_id = 1;                              // [CONFIRMED] Message type: 1=init, 6=data, 0xFF=marker, 0xA2=ack
+  uint32 seq = 2;                                     // [CONFIRMED] Sequence number
+  ConversateSettings settings = 3;                    // [INFERRED]
+  ConversateTranscribeData transcribe_data = 4;       // [INFERRED]
+  ConversateKeypointData keypoint_data = 5;           // [INFERRED]
+  ConversateTagData tag_data = 6;                     // [INFERRED]
+  ConversateTagTrackingData tag_tracking_data = 7;    // [INFERRED]
+  ConversateTextMessage text_message = 8;             // [CONFIRMED] Transcription text (sub1=text, sub2=is_final)
+  ConversateHeartBeat heart_beat = 9;                 // [INFERRED]
+  ConversateCommResp comm_resp = 10;                  // [INFERRED]
+  ConversateStatusNotify status_notify = 11;          // [INFERRED]
+}
+
+// Session control
+message ConversateControl {
+  uint32 cmd = 1;              // ConversateCtrlCmd
+}
+
+// Session settings
+message ConversateSettings {
+  // Fields TBD — likely language, display preferences
+}
+
+// Transcription text data (used when command_id = CONVERSATE_TRANSCRIBE_DATA)
+// Community confirms: field 1 = text, field 2 = is_final
+message ConversateTranscribeData {
+  string text = 1;             // [CONFIRMED] Transcribed text (UTF-8)
+  bool is_final = 2;           // [CONFIRMED] True if final recognition result
+  string speaker = 3;          // [INFERRED] Speaker identification
+  uint64 id = 4;               // [INFERRED] Utterance ID
+}
+
+// Text message embedded in field 8 of ConversateDataPackage
+// CONFIRMED from BLE capture: carries actual transcription when command_id=6
+// Captured examples: "Ok", "Okay.", "I'm talking right now.", "Oh c'est tres bien super."
+message ConversateTextMessage {
+  string text = 1;             // [CONFIRMED] UTF-8 transcription text
+  uint32 is_final = 2;         // [CONFIRMED] 0=partial, 1=final result
+}
+
+// Key points extracted from conversation
+message ConversateKeypointData {
+  string text = 1;             // [INFERRED] Key point text
+}
+
+// Conversation tags
+message ConversateTagData {
+  string tag = 1;              // [INFERRED] Tag text
+  ConversateTagType type = 2;  // [INFERRED] Tag type
+}
+
+// Tag tracking
+message ConversateTagTrackingData {
+  // Fields TBD
+}
+
+// Conversation title
+message ConversateTitleData {
+  string title = 1;            // [INFERRED]
+}
+
+// Keep-alive
+message ConversateHeartBeat {
+  uint64 timestamp = 1;        // [INFERRED]
+}
+
+// Command response
+message ConversateCommResp {
+  uint32 err_code = 1;         // [INFERRED] ConversateErrorCode
+}
+
+// Status notification
+message ConversateStatusNotify {
+  // Fields TBD
+}
+
+// ============================================================
+// PROTOCOL FLOW — Streaming Text Display on nRF52840
+// ============================================================
+//
+// 1. START SESSION:
+//    Transport header: [AA][21][seq][len][01][01][0B][20]
+//    Payload: ConversateDataPackage {
+//      command_id = CONVERSATE_CONTROL,
+//      control = { cmd = CONVERSATE_CTRL_START }
+//    }
+//    Send on 5401
+//
+// 2. STREAM TEXT:
+//    Transport header: [AA][21][seq][len][01][01][0B][20]
+//    Payload: ConversateDataPackage {
+//      command_id = CONVERSATE_TRANSCRIBE_DATA,
+//      transcribe_data = { text = "Hello world", is_final = false }
+//    }
+//    Send on 5401 — glasses update display in real-time
+//
+// 3. HEARTBEAT (every few seconds):
+//    Payload: ConversateDataPackage {
+//      command_id = CONVERSATE_HEART_BEAT,
+//      heart_beat = { timestamp = <unix_ms> }
+//    }
+//
+// 4. STOP SESSION:
+//    Payload: ConversateDataPackage {
+//      command_id = CONVERSATE_CONTROL,
+//      control = { cmd = CONVERSATE_CTRL_STOP }
+//    }

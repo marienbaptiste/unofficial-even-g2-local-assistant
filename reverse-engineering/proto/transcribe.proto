@@ -1,0 +1,81 @@
+// Even Realities G2 — Transcribe Service
+// Reconstructed from BLE captures + CONFIRMED from BLE capture file
+//
+// Real-time speech-to-text transcription display.
+//
+// Service ID: INFERRED (need BLE capture to confirm)
+// BLE: Commands on 5401, responses on 5402
+
+syntax = "proto3";
+
+package even.g2.transcribe;
+
+// Command IDs
+// Source: BLE capture analysis
+enum TranscribeCmd {
+  TRANSCRIBE_CMD_NONE = 0;
+  TRANSCRIBE_CTRL = 1;                 // Control (start/stop)
+  TRANSCRIBE_RESULT = 2;               // Transcription result
+  TRANSCRIBE_HEARTBEAT = 3;            // Keep-alive
+  TRANSCRIBE_NOTIFY = 4;               // Notification
+}
+
+// Top-level data package
+// Source: TranscribeDataPackage class 
+message TranscribeDataPackage {
+  uint32 command_id = 1;               // [INFERRED] TranscribeCmd
+  TranscribeControl ctrl = 2;         // [INFERRED]
+  TranscribeResult result = 3;        // [INFERRED]
+  TranscribeHeartBeat heart_beat = 4; // [INFERRED]
+  TranscribeNotify notify = 5;        // [INFERRED]
+}
+
+message TranscribeControl {
+  uint32 action = 1;           // Start/stop
+}
+
+// Transcription result
+// CONFIRMED from transcribe_event.proto found in protocol analysis:
+//   message TranscribeResult {
+//     string text = 1; string reason = 2; bool is_final = 3;
+//     string session_id = 4; int64 id = 5;
+//   }
+message TranscribeResult {
+  string text = 1;             // [CONFIRMED from BLE capture]
+  string reason = 2;           // [CONFIRMED from BLE capture]
+  bool is_final = 3;           // [CONFIRMED from BLE capture]
+  string session_id = 4;       // [CONFIRMED from BLE capture]
+  int64 id = 5;                // [CONFIRMED from BLE capture]
+}
+
+// Transcription event types (from BLE capture)
+// CONFIRMED from transcribe_event.proto:
+enum TranscribeEventType {
+  recognizing = 0;
+  recognized = 1;
+  synthesizing = 2;
+  sessionStarted = 3;
+  sessionStopped = 4;
+  speechStartDetected = 5;
+  speechEndDetected = 6;
+  canceled = 7;
+  error = 8;
+}
+
+// Transcribe event wrapper (from BLE capture)
+message TranscribeEvent {
+  TranscribeEventType type = 1;        // [CONFIRMED]
+  TranscribeResult result = 2;         // [CONFIRMED]
+}
+
+message TranscribeHeartBeat {
+  uint64 timestamp = 1;       // [INFERRED]
+}
+
+message TranscribeNotify {
+  // Fields TBD
+}
+
+message TranscribeResp {
+  uint32 err_code = 1;        // [INFERRED]
+}

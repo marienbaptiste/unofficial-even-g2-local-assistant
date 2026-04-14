@@ -1,0 +1,130 @@
+// Even Realities G2 — Dashboard / AI Session Service (0x07)
+// CONFIRMED from BLE capture: "Hey Even" AI session 2026-04-12
+//
+// The Dashboard service handles BOTH the idle dashboard widgets AND
+// the full AI conversation flow (transcription, response streaming).
+// This was a major discovery — AI does NOT use a dedicated service.
+//
+// Service ID: 0x07-0x20 (phone→glasses command)
+//             0x07-0x00 (glasses→phone response/ack)
+//             0x07-0x01 (glasses→phone events)
+// BLE: Commands on 5401, responses on 5402
+
+syntax = "proto3";
+
+package even.g2.dashboard;
+
+// ============================================
+// Top-level Dashboard message
+// ============================================
+
+message DashboardDataPackage {
+  int32 type = 1;                // CONFIRMED — see DashboardType enum
+  int32 msg_id = 2;              // CONFIRMED — sequence number
+
+  // Payload fields — one active based on type
+  DashboardWake wake = 3;                   // type=1: dashboard wake/status
+  VoiceInputDone voice_done = 4;            // type=2: end of speech input
+  LiveTranscription transcription = 5;      // type=3: progressive STT text
+  AiThinking thinking = 6;                  // type=4: AI processing indicator
+  AiResponseStream ai_response = 7;        // type=5: streamed AI response text (TBD: could be field5 or field7)
+  DashboardContent content = 8;             // type=8: widget content (news, weather, etc.)
+  DashboardHeartbeat heartbeat = 11;        // type=9: keep-alive during AI session
+  DashboardInit init = 13;                  // type=10: init/sync
+}
+
+// Dashboard message types (field 1 values)
+// CONFIRMED from BLE capture 2026-04-12
+enum DashboardType {
+  DASHBOARD_WAKE = 1;             // Head tilt or other wake trigger
+  VOICE_INPUT_DONE = 2;           // End of speech input
+  LIVE_TRANSCRIPTION = 3;         // Progressive STT text updates
+  AI_THINKING = 4;                // AI is processing (thinking indicator)
+  AI_RESPONSE_STREAM = 5;        // Streamed AI response text chunks
+  DASHBOARD_HEARTBEAT = 9;       // Keep-alive during AI session
+  DASHBOARD_INIT = 10;           // Init/sync at connection
+}
+
+// ============================================
+// AI Session Messages
+// ============================================
+
+// type=1: Dashboard wake (glasses→phone event, or phone→glasses ack)
+message DashboardWake {
+  int32 trigger = 1;             // CONFIRMED: 3=head_tilt, 2=other
+}
+
+// type=2: Voice input done
+message VoiceInputDone {
+  int32 status = 1;              // CONFIRMED: 2=done
+}
+
+// type=3: Live transcription (progressive STT)
+// Phone sends progressive text updates as the user speaks
+message LiveTranscription {
+  int32 field1 = 1;              // CONFIRMED: always 0
+  int32 field2 = 2;              // CONFIRMED: always 0
+  string text = 4;               // CONFIRMED: transcribed text (progressive)
+}
+
+// type=4: AI thinking indicator
+message AiThinking {
+  // CONFIRMED: empty payload (field6=<0B> = empty bytes)
+}
+
+// type=5: AI response streaming
+// Phone streams text chunks as the AI generates its response
+message AiResponseStream {
+  // CONFIRMED: carries text in field5 sub-message
+  // Exact sub-field TBD — may reuse LiveTranscription structure
+  int32 field1 = 1;              // observed: 0
+  int32 field2 = 2;              // observed: 0
+  string text = 4;               // AI response text chunk
+}
+
+// type=9: Heartbeat during AI session
+message DashboardHeartbeat {
+  int32 active = 1;              // CONFIRMED: 1 = session active
+}
+
+// type=10: Init/sync
+message DashboardInit {
+  int32 field1 = 1;              // CONFIRMED: 0
+  int32 field2 = 2;              // CONFIRMED: 80
+}
+
+// ============================================
+// AI Session Flow (CONFIRMED from capture)
+// ============================================
+//
+// 1. INIT (type=10): Phone sends field13={f1=0, f2=80}
+//    Glasses acks with type=10
+//
+// 2. HEAD TILT (type=1): Glasses sends event on 0x07-0x01 field3={f1=3}
+//    Phone acks with type=1 field3={f1=3} or {f1=2}
+//
+// 3. AI SESSION START (type=9): Phone sends field11={f1=1} repeatedly
+//
+// 4. LIVE TRANSCRIPTION (type=3): Phone sends progressive text updates
+//    field5={f1=0, f2=0, f4="what is"}
+//    field5={f1=0, f2=0, f4="what is dominato right now"}
+//    field5={f1=0, f2=0, f4="What is Dominato right now in Geneva?"}
+//    Glasses acks each with type=3
+//
+// 5. VOICE DONE (type=2): Phone sends field4={f1=2}
+//    Glasses acks with type=2
+//
+// 6. AI THINKING (type=4): Phone sends field6=empty
+//    Glasses shows thinking indicator
+//
+// 7. AI RESPONSE (type=5): Phone streams text chunks
+//    "Dominato is likely a reference to **Dominion Fiduciary..."
+//    ", which is located in the heart of Geneva..."
+//    " management services for high-net-worth..."
+//    Glasses displays each chunk progressively
+//
+// 8. HEARTBEATS (type=9): Sent throughout with field11={f1=1}
+//
+// NOTE: Service 0x01-0x20 carries STOCK DATA during this session
+// (found "Ubisoft Entertainment" + float values = stock tickers),
+// NOT AI session control. 0x07 is the AI channel.

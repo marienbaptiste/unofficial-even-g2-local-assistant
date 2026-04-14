@@ -1,0 +1,88 @@
+// Even Realities G2 — Transport Layer & Service IDs
+// Reconstructed from BLE captures strings + code analysis
+//
+// The G2 BLE protocol wraps all messages in a binary transport header
+// (NOT protobuf), then a protobuf payload inside.
+//
+// Binary transport format (NOT a protobuf message):
+//   [0xAA] [routing] [syncID] [payloadLen] [totalPkts] [serialNum] [serviceID] [status] [protobuf_payload...] [crc_lo] [crc_hi]
+//
+//   Offset 0: Header byte     = 0xAA (fixed)
+//   Offset 1: Routing         = (dest << 4) | source  [phone=1, glasses=2]
+//                                0x21 = phone->glasses, 0x12 = glasses->phone
+//   Offset 2: SyncID          = Incremented per logical message (wraps at 0xFF)
+//   Offset 3: PayloadLen      = Length of payload in this packet (+2 if last packet, for CRC)
+//   Offset 4: TotalPackets    = Total packets for this message
+//   Offset 5: SerialNum       = 1-indexed packet number within message
+//   Offset 6: ServiceID       = Service routing byte (see service map below)
+//   Offset 7: Status          = bit0=notify, bits1-4=resultCode, bit5=reserveFlag
+//
+//   Max payload per packet: 236 bytes
+//   Fragmentation: messages > 236B split across multiple packets
+//   Reassembly key: "{serviceId}-{syncId}"
+//   CRC16: only on LAST packet, appended as little-endian (PayloadLen includes +2 for CRC bytes)
+//   CRC16 algorithm: init=0xFFFF, custom polynomial (see capture_server analyzer)
+//
+// BLE Characteristics:
+//   Base UUID: 00002760-08C2-11E1-9073-0E8AC72E{suffix}
+//   5401 = Write  (phone -> glasses commands)
+//   5402 = Notify (glasses -> phone responses)
+//   6401 = Write  (display data transfer)
+//   6402 = Write  (display rendering data)
+//   7401 = Write  (third channel)
+//   7402 = Notify (third channel)
+
+syntax = "proto3";
+
+package even.g2;
+
+// Top-level wrapper message — "meun_main_msg_ctx"
+// Every protobuf payload on 5401/5402 is wrapped in this.
+// The wrapper identifies which service the inner message belongs to.
+message MainMessageContext {
+  uint32 command_id = 1;       // Service-specific command enum value
+
+  // The actual payload — a oneof keyed by service type
+  // In the binary, the app uses "whichCommandData" to switch
+  oneof command_data {
+    // Each service has its own DataPackage message
+    // The field numbers here are INFERRED — need BLE capture confirmation
+    bytes raw_data = 2;        // Fallback: raw bytes if service unknown
+  }
+}
+
+// Service ID definitions (bytes 6-7 in transport header)
+// Source: BLE capture analysis
+// Format: svc_hi-svc_lo (e.g., 0x06-0x20 = Teleprompter)
+//
+// CONFIRMED service IDs (inferred from code, 0x20 confirmed by community teleprompter.py):
+//   0x80-0x00 = Sync
+//   0x80-0x20 = Auth / Session
+//   0x80-0x01 = Auth Response              [ADDED 2026-03-28]
+//   0x02-0x20 = Notification
+//   0x04-0x20 = Display Wake
+//   0x06-0x20 = Teleprompter
+//   0x07-0x20 = Dashboard
+//   0x0B-0x20 = Conversate
+//   0x0C-0x20 = Tasks                      [ADDED 2026-03-28]
+//   0x0D-0x20 = Config
+//   0x0E-0x20 = Display Config
+//   0x11-0x20 = Conversate (alt)           [ADDED 2026-03-28]
+//   0x20-0x20 = Commit                     [ADDED 2026-03-28]
+//   0x81-0x20 = EvenHub / Display Trigger
+//
+// INFERRED service IDs (from app code, need BLE confirmation):
+//   0x09-0x20 = Device Info
+//   0x0A-0x20 = Even AI (?)
+//   0x03-0x20 = Transcribe (?)
+//   0x05-0x20 = Quick List (?)
+//   0x08-0x20 = Navigation (?)
+//   0x10-0x20 = Health (?)
+//
+// NOTE: The low byte encodes the sub-service mode:
+//   0x00 = Control/query, 0x01 = Response, 0x20 = Data/payload
+//
+// [UPDATED 2026-03-28] Fixed low byte from 0x14 to 0x20. The 0x14 was a
+// decimal/hex mixup (decimal 20 != hex 0x14). Confirmed against working
+// teleprompter.py. Also moved Tasks (0x0C) and Conversate alt (0x11) from
+// inferred to confirmed, and removed Ring (0x11 was misidentified as Ring).

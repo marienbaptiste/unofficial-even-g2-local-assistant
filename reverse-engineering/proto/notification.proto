@@ -1,0 +1,63 @@
+// Even Realities G2 — Notification Service
+// Reconstructed from BLE protocol analysis
+//
+// Displays notification metadata (app name + count, NOT full notification text).
+//
+// Service ID: 0x02-0x20 [CONFIRMED from BLE captures]
+// BLE: Commands on 5401, responses on 5402
+
+syntax = "proto3";
+
+package even.g2.notification;
+
+// Command IDs
+// Source: BLE capture analysis
+enum NotificationCommandId {
+  NOTIFICATION_CMD_NONE = 0;
+  NOTIFICATION_CTRL = 1;               // Control
+  NOTIFICATION_COMM_RSP = 2;           // Command response
+  NOTIFICATION_IOS = 3;                // iOS-specific handling
+  NOTIFICATION_JSON_WHITELIST = 4;     // JSON whitelist config
+  NOTIFICATION_WHITELIST_CTRL = 5;     // Whitelist control
+}
+
+// Top-level data package
+// Source: NotificationDataPackage class 
+// Community confirms: type=1, msg_id=2, notification=3
+message NotificationDataPackage {
+  uint32 type = 1;                                     // [CONFIRMED]
+  uint32 msg_id = 2;                                   // [CONFIRMED]
+  NotificationData notification = 3;                   // [CONFIRMED]
+  NotificationControl control = 4;                     // [INFERRED]
+  NotificationCommRsp comm_rsp = 5;                    // [INFERRED]
+  NotificationIOS ios = 6;                             // [INFERRED]
+  NotificationWhitelistCtrl whitelist_ctrl = 7;        // [INFERRED]
+}
+
+// Notification data
+// Community confirms: app_id=1, count=2
+message NotificationData {
+  uint32 app_id = 1;          // [CONFIRMED] e.g., 0x1A = Gmail
+  uint32 count = 2;           // [CONFIRMED] Number of notifications
+  // NOTE: Only metadata — no notification text content
+}
+
+// Notification control
+message NotificationControl {
+  uint32 action = 1;          // [INFERRED]
+}
+
+// Command response
+message NotificationCommRsp {
+  uint32 err_code = 1;        // [INFERRED]
+}
+
+// iOS-specific notification handling
+message NotificationIOS {
+  // Fields TBD — iOS ANCS bridge
+}
+
+// Whitelist control (which apps show notifications)
+message NotificationWhitelistCtrl {
+  repeated string white_list = 1; // [INFERRED] App package names
+}

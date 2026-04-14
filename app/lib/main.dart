@@ -1,0 +1,849 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/material.dart';
+import 'package:even_g2_sdk/even_g2_sdk.dart';
+import 'package:http/http.dart' as http;
+import 'package:web_socket_channel/web_socket_channel.dart';
+// import 'test_tab.dart';
+
+void main() => runApp(const G2App());
+
+class G2App extends StatelessWidget {
+  const G2App({super.key});
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'Even G2 Assistant',
+    theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true, brightness: Brightness.dark),
+    home: const G2Page(),
+  );
+}
+
+class G2Page extends StatefulWidget {
+  const G2Page({super.key});
+  @override
+  State<G2Page> createState() => _G2PageState();
+}
+
+class _G2PageState extends State<G2Page> {
+  final _g2 = EvenG2();
+  final _textCtrl = TextEditingController(text: 'Hello from Flutter!');
+
+  // State
+  String _phase = 'disconnected'; // disconnected, connecting, conversate
+  String _status = 'Tap Connect to start';
+  double _vuLevel = 0.0;
+  String _currentPartial = '';
+  final List<String> _finalizedLines = [];  // Conversation content (what's on glasses)
+  final List<String> _debugLines = [];      // Debug/protocol events
+  DateTime _lastDisplayUpdate = DateTime.now();
+
+  // Pre-connection mode: 'conversate' or 'even_ai'
+  String _mode = 'conversate';
+
+  // Even AI session state
+  StreamSubscription? _wakeSub;
+  StreamSubscription? _eventSub;
+  bool _aiSessionActive = false;
+  Timer? _dashboardHeartbeatTimer;
+
+  // Service health
+  static const _voiceUrl = 'http://localhost:8081';
+  static const _voiceWsUrl = 'ws://localhost:8081';
+  static const _openclawUrl = 'http://localhost:18789';
+  static final _openclawToken = _loadOpenClawToken();
+
+  static String _loadOpenClawToken() {
+    // --dart-define takes priority
+    const envToken = String.fromEnvironment('OPENCLAW_TOKEN', defaultValue: '');
+    if (envToken.isNotEmpty) return envToken;
+    // Auto-detect from ~/.openclaw/openclaw.json
+    try {
+      final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
+      final f = File('$home/.openclaw/openclaw.json');
+      if (f.existsSync()) {
+        final data = jsonDecode(f.readAsStringSync());
+        final token = data['gateway']?['auth']?['token'];
+        if (token is String && token.isNotEmpty) return token;
+      }
+    } catch (_) {}
+    return '';
+  }
+  bool _whisperOnline = false;
+  bool _whisperModelLoaded = false;
+  bool _openclawOnline = false;
+  Timer? _healthTimer;
+
+  // AI conversation history (rolling window for context)
+  final List<Map<String, String>> _aiHistory = [];
+  bool _aiProcessing = false;
+
+  // Streaming
+  WebSocketChannel? _ws;
+  StreamSubscription? _connSub;
+  StreamSubscription? _levelSub;
+  StreamSubscription? _micSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _connSub = _g2.onConnectionChange.listen((connected) {
+      if (!connected && _phase != 'disconnected') {
+        _disconnectVoice();
+        setState(() {
+          _phase = 'disconnected';
+          _status = 'Disconnected';
+          _vuLevel = 0;
+        });
+      }
+    });
+    _checkHealth();
+    _healthTimer = Timer.periodic(const Duration(seconds: 5), (_) => _checkHealth());
+  }
+
+  @override
+  void dispose() {
+    _healthTimer?.cancel();
+    _connSub?.cancel();
+    _levelSub?.cancel();
+    _micSub?.cancel();
+    _wakeSub?.cancel();
+    _eventSub?.cancel();
+    _dashboardHeartbeatTimer?.cancel();
+    _disconnectVoice();
+    _textCtrl.dispose();
+    _g2.dispose();
+    super.dispose();
+  }
+
+  Future<void> _checkHealth() async {
+    try {
+      final resp = await http.get(Uri.parse('$_voiceUrl/api/health'))
+          .timeout(const Duration(seconds: 2));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        setState(() {
+          _whisperOnline = true;
+          _whisperModelLoaded = data['model_loaded'] == true;
+        });
+      } else {
+        setState(() { _whisperOnline = false; _whisperModelLoaded = false; });
+      }
+    } catch (_) {
+      setState(() { _whisperOnline = false; _whisperModelLoaded = false; });
+    }
+
+    // OpenClaw
+    try {
+      final resp = await http.get(Uri.parse('$_openclawUrl/healthz'))
+          .timeout(const Duration(seconds: 2));
+      setState(() => _openclawOnline = resp.statusCode == 200);
+    } catch (_) {
+      setState(() => _openclawOnline = false);
+    }
+  }
+
+  // -- Voice service WebSocket --
+
+  void _connectVoice() {
+    if (!_whisperModelLoaded) return;
+
+    _ws = WebSocketChannel.connect(Uri.parse('$_voiceWsUrl/ws/stream'));
+
+    // Configure for LC3 input
+    _ws!.sink.add(jsonEncode({
+      'action': 'config',
+      'input_format': 'lc3',
+    }));
+
+    // Listen for transcription results
+    _ws!.stream.listen((message) {
+      final data = jsonDecode(message as String);
+
+      if (data['segments'] != null) {
+        final segments = data['segments'] as List;
+        if (segments.isEmpty) return;
+        final text = segments.last['text'].toString().trim();
+        final isPartial = data['partial'] == true;
+        if (text.isNotEmpty) {
+          if (_mode == 'even_ai') {
+            _handleEvenAiTranscript(text, isPartial: isPartial);
+          } else {
+            _handleConversateTranscript(text, isPartial: isPartial);
+          }
+        }
+      }
+
+    }, onError: (e) {
+      setState(() => _status = 'Voice stream error: $e');
+    }, onDone: () {
+      _ws = null;
+    });
+  }
+
+  void _safeDisplay(String text, {required bool isFinal}) {
+    try {
+      if (isFinal) {
+        _g2.display.showFinal(text);
+      } else {
+        _g2.display.showPartial(text);
+      }
+      _lastDisplayUpdate = DateTime.now();
+    } catch (e) {
+      // Don't let display errors kill the voice stream
+      debugPrint('Display error: $e');
+    }
+  }
+
+  void _disconnectVoice() {
+    _micSub?.cancel();
+    _micSub = null;
+    _ws?.sink.close();
+    _ws = null;
+  }
+
+  // -- Transcript handlers --
+
+  void _handleConversateTranscript(String text, {required bool isPartial}) {
+    if (isPartial) {
+      setState(() => _currentPartial = text);
+      final now = DateTime.now();
+      if (now.difference(_lastDisplayUpdate).inMilliseconds > 500) {
+        _lastDisplayUpdate = now;
+        _safeDisplay(text, isFinal: false);
+      }
+    } else {
+      _finalizedLines.add(text);
+      if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
+      setState(() => _currentPartial = '');
+      final recent = _finalizedLines.length > 3
+          ? _finalizedLines.sublist(_finalizedLines.length - 3)
+          : _finalizedLines;
+      _safeDisplay(recent.join('\n'), isFinal: true);
+      _sendToOpenClaw(text);
+    }
+  }
+
+  void _handleEvenAiTranscript(String text, {required bool isPartial}) {
+    if (isPartial) {
+      setState(() => _currentPartial = text);
+      // Show live transcription on glasses via Dashboard
+      final now = DateTime.now();
+      if (now.difference(_lastDisplayUpdate).inMilliseconds > 500) {
+        _lastDisplayUpdate = now;
+        try {
+          _g2.dashboard.sendTranscription(text);
+        } catch (_) {}
+      }
+    } else {
+      _finalizedLines.add(text);
+      if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
+      setState(() => _currentPartial = '');
+      // Final transcription + AI response via Dashboard flow
+      _runEvenAiResponse(text);
+    }
+  }
+
+  Future<void> _runEvenAiResponse(String transcript) async {
+    if (!_openclawOnline || _aiProcessing) return;
+
+    // Stop mic + Whisper — transcription is done, no more audio needed
+    _micSub?.cancel(); _micSub = null;
+    _levelSub?.cancel(); _levelSub = null;
+    _disconnectVoice();
+    if (_g2.mic.isActive) _g2.mic.stop().catchError((_) => <Uint8List>[]);
+
+    _aiHistory.add({'role': 'user', 'content': 'This is a question that expects always an answer: $transcript'});
+    while (_aiHistory.length > 20) _aiHistory.removeAt(0);
+
+    _aiProcessing = true;
+    setState(() { _status = 'Even AI: thinking...'; _vuLevel = 0; });
+
+    Timer? thinkingTimer;
+    try {
+      // Signal transcription done + show thinking on glasses
+      await _g2.dashboard.transcriptionDone();
+      await Future.delayed(const Duration(milliseconds: 100));
+      await _g2.dashboard.showThinking();
+
+      // Keep glasses awake: send thinking + heartbeat every 2s while waiting
+      thinkingTimer = Timer.periodic(
+        const Duration(seconds: 2),
+        (_) {
+          _g2.dashboard.showThinking().catchError((_) {});
+          _g2.dashboard.heartbeat().catchError((_) {});
+        },
+      );
+
+      final messages = [
+        {'role': 'system', 'content': 'You are a personal AI assistant on smart glasses. '
+            'You receive live transcripts of what the wearer says. '
+            'ALWAYS respond to every message. '
+            'Prefix responses with [AI]. Keep under 3 sentences.'},
+        ..._aiHistory,
+      ];
+
+      final resp = await http.post(
+        Uri.parse('$_openclawUrl/v1/chat/completions'),
+        headers: {
+          'Authorization': 'Bearer $_openclawToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'model': 'openclaw', 'messages': messages}),
+      ).timeout(const Duration(seconds: 60));
+
+      thinkingTimer?.cancel();
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        final content = data['choices']?[0]?['message']?['content']?.toString().trim() ?? '';
+
+        if (content.isNotEmpty && content != '[SILENT]' && !content.contains('[SILENT]')) {
+          _aiHistory.add({'role': 'assistant', 'content': content});
+          // Stream AI response via Dashboard protocol
+          await _g2.dashboard.streamResponse(content);
+          await Future.delayed(const Duration(milliseconds: 100));
+          await _g2.dashboard.streamResponseDone();
+
+          // Keep response visible — send heartbeats before ending
+          try {
+            for (int i = 0; i < 5; i++) {
+              await Future.delayed(const Duration(milliseconds: 1500));
+              if (!_g2.isConnected) break;
+              await _g2.dashboard.heartbeat();
+            }
+            if (_g2.isConnected) await _g2.dashboard.endSession();
+          } catch (_) {}
+
+          setState(() {
+            _finalizedLines.add(content);
+            if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
+            _status = 'Even AI: listening for "Hey Even"...';
+          });
+        } else {
+          await _g2.dashboard.endSession();
+          setState(() => _status = 'Even AI: listening for "Hey Even"...');
+        }
+      }
+    } catch (e) {
+      thinkingTimer?.cancel();
+      debugPrint('Even AI error: $e');
+      setState(() => _status = 'Even AI: error');
+    } finally {
+      _aiProcessing = false;
+      _cleanupAiSession();
+    }
+  }
+
+  /// Clean up AI session state without sending endSession() to glasses.
+  /// The glasses decide when the session ends (via BOUNDARY event).
+  void _cleanupAiSession() {
+    _dashboardHeartbeatTimer?.cancel();
+    _dashboardHeartbeatTimer = null;
+    _levelSub?.cancel(); _levelSub = null;
+    _micSub?.cancel(); _micSub = null;
+    _disconnectVoice();
+    if (_g2.mic.isActive) _g2.mic.stop().catchError((_) => <Uint8List>[]);
+    _aiSessionActive = false;
+    _aiProcessing = false;
+    setState(() {
+      _vuLevel = 0;
+      _currentPartial = '';
+    });
+  }
+
+  // -- OpenClaw AI (Conversate mode) --
+
+  Future<void> _sendToOpenClaw(String transcript) async {
+    if (!_openclawOnline || _aiProcessing) return;
+
+    _aiHistory.add({'role': 'user', 'content': transcript});
+    while (_aiHistory.length > 20) _aiHistory.removeAt(0);
+
+    _aiProcessing = true;
+
+    try {
+      final messages = [
+        {'role': 'system', 'content': 'You are a personal AI assistant on smart glasses. '
+            'You receive live transcripts of what the wearer says. '
+            'Only respond if directly addressed or if there is an action item. '
+            'Prefix responses with [AI]. Keep under 3 sentences. '
+            'If not addressed, respond with exactly: [SILENT]'},
+        ..._aiHistory,
+      ];
+
+      final resp = await http.post(
+        Uri.parse('$_openclawUrl/v1/chat/completions'),
+        headers: {
+          'Authorization': 'Bearer $_openclawToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'model': 'openclaw', 'messages': messages}),
+      ).timeout(const Duration(seconds: 15));
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        final content = data['choices']?[0]?['message']?['content']?.toString().trim() ?? '';
+
+        if (content.isNotEmpty && content != '[SILENT]' && !content.contains('[SILENT]')) {
+          _aiHistory.add({'role': 'assistant', 'content': content});
+          _safeDisplay(content, isFinal: true);
+          setState(() {
+            _finalizedLines.add(content);
+            if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('OpenClaw error: $e');
+    } finally {
+      _aiProcessing = false;
+    }
+  }
+
+  // -- Actions --
+
+  Future<void> _connect() async {
+    setState(() { _phase = 'connecting'; _status = 'Scanning...'; });
+    try {
+      await _g2.connectToNearest();
+
+      if (_mode == 'even_ai') {
+        // Log 0x07 packets to file for debugging
+        final logFile = File('${Platform.environment['APPDATA'] ?? '.'}/even_g2_debug.log');
+        logFile.writeAsStringSync('--- Session ${DateTime.now()} ---\n');
+        _g2.debugEvents.listen((e) {
+          final svc = '0x${e.packet.serviceHi.toRadixString(16).padLeft(2, "0")}-0x${e.packet.serviceLo.toRadixString(16).padLeft(2, "0")}';
+          final hex = e.packet.payload.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+          logFile.writeAsStringSync('${DateTime.now()} $svc [${ e.packet.payload.length}B] $hex\n', mode: FileMode.append);
+          // Route protocol events to debug panel
+          if (e.packet.serviceLo == 0x01) {
+            setState(() {
+              _debugLines.add('EVT $svc $hex');
+              if (_debugLines.length > 200) _debugLines.removeAt(0);
+            });
+          }
+        });
+
+        // Listen for wake signal (state=1 = mic open, audio flowing)
+        _wakeSub = _g2.dashboard.onWake.listen((event) {
+          setState(() => _debugLines.add('>>> WAKE: mic open (state=1)'));
+          _onEvenAiWake();
+        });
+
+        // Listen for BOUNDARY events (state=3 = session end from glasses)
+        _eventSub = _g2.dashboard.onEvent.listen((event) {
+          if (event.isBoundary && _aiSessionActive) {
+            setState(() => _debugLines.add('>>> BOUNDARY: session ended by glasses'));
+            _onGlassesBoundary();
+          }
+        });
+
+        setState(() {
+          _phase = 'conversate';
+          _status = 'Even AI: listening for "Hey Even"...';
+          _aiSessionActive = false;
+        });
+      } else {
+        await _g2.display.show('Connected');
+        // Conversate: start mic + Whisper immediately
+        await _g2.mic.start();
+
+        _levelSub = _g2.mic.levelStream.listen((level) {
+          setState(() => _vuLevel = level);
+        });
+
+        _connectVoice();
+
+        _micSub = _g2.mic.packetStream.listen((packet) {
+          _ws?.sink.add(packet);
+        });
+
+        setState(() {
+          _phase = 'conversate';
+          _status = 'Streaming to Whisper';
+        });
+      }
+    } catch (e) {
+      setState(() { _phase = 'disconnected'; _status = 'Error: $e'; });
+    }
+  }
+
+  /// Called when glasses send LISTENING_STARTED (state=1) — mic is open, audio flowing.
+  /// Protocol from capture Let's_test_the_Hey_Even_AI_prompt_20260413_234655.
+  Future<void> _onEvenAiWake() async {
+    // Back-to-back: if previous session still active, reset first
+    if (_aiSessionActive) {
+      _cleanupAiSession();
+      // Per capture: send config + boundary to reset old session
+      await _g2.dashboard.sendConfig().catchError((_) {});
+      await _g2.dashboard.endSession().catchError((_) {});
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    _aiSessionActive = true;
+
+    setState(() => _status = 'Even AI: mic open, processing audio...');
+
+    try {
+      // ACK: confirm we're processing audio (state=2 + heartbeat)
+      await _g2.dashboard.ackWake();
+
+      // Continue heartbeats at ~1.5s (matches capture interval)
+      _dashboardHeartbeatTimer?.cancel();
+      _dashboardHeartbeatTimer = Timer.periodic(
+        const Duration(milliseconds: 1500),
+        (_) => _g2.dashboard.heartbeat().catchError((_) {}),
+      );
+
+      // Subscribe to glasses mic audio (LC3 on char 6402)
+      await _g2.mic.start(raw: true);
+      _levelSub = _g2.mic.levelStream.listen((level) {
+        setState(() => _vuLevel = level);
+      });
+
+      // Connect Whisper WS and pipe audio frames into it
+      _connectVoice();
+      _micSub = _g2.mic.packetStream.listen((packet) {
+        _ws?.sink.add(packet);
+      });
+
+      setState(() => _status = 'Even AI: listening...');
+      // Audio flows: glasses mic → BLE char 6402 → phone → Whisper WS
+      // Whisper calls _handleEvenAiTranscript via WebSocket listener (line 167)
+    } catch (e) {
+      debugPrint('Even AI wake error: $e');
+      setState(() => _status = 'Even AI ERROR: $e');
+      _cleanupAiSession();
+    }
+  }
+
+  /// Called when glasses send BOUNDARY (state=3) — session is over.
+  void _onGlassesBoundary() {
+    // ACK the boundary
+    _g2.dashboard.endSession().catchError((_) {});
+    _cleanupAiSession();
+    setState(() => _status = 'Even AI: listening for "Hey Even"...');
+  }
+
+  Future<void> _disconnect() async {
+    _cleanupAiSession();
+    _wakeSub?.cancel();
+    _wakeSub = null;
+    _eventSub?.cancel();
+    _eventSub = null;
+    await _g2.disconnect();
+    setState(() {
+      _phase = 'disconnected';
+      _status = 'Disconnected';
+      _vuLevel = 0;
+      _currentPartial = '';
+      _finalizedLines.clear();
+    });
+  }
+
+  Future<void> _send() async {
+    final text = _textCtrl.text.trim();
+    if (text.isEmpty) return;
+    try {
+      await _g2.display.show(text);
+      setState(() => _status = 'Sent: $text');
+    } catch (e) {
+      setState(() => _status = 'Send error: $e');
+    }
+  }
+
+  Future<void> _testAiCards() async {
+    try {
+      setState(() => _status = 'Sending AI cards...');
+      // Send multiple AI response lines with different icons — like the Even tutorial
+      await _g2.display.showAiResponse(
+        icon: Display.iconLink, title: 'Meeting Summary', body: 'Q2 planning session', isDone: false);
+      await Future.delayed(const Duration(milliseconds: 200));
+      await _g2.display.showAiResponse(
+        icon: Display.iconPerson, title: 'Participants', body: 'Alice, Bob, Charlie', isDone: false);
+      await Future.delayed(const Duration(milliseconds: 200));
+      await _g2.display.showAiResponse(
+        icon: Display.iconAi, title: 'Key Decision', body: 'Launch date moved to Q3', isDone: false);
+      await Future.delayed(const Duration(milliseconds: 200));
+      await _g2.display.showAiResponse(
+        icon: Display.iconPerson, title: 'Action Item', body: 'Alice to prepare deck by Friday', isDone: true);
+      setState(() => _status = 'AI cards sent!');
+    } catch (e) {
+      setState(() => _status = 'AI card error: $e');
+    }
+  }
+
+  // -- UI --
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Even G2 Assistant'),
+        actions: [
+          _serviceIndicator('Whisper', _whisperOnline, _whisperModelLoaded),
+          _serviceIndicator('OpenClaw', _openclawOnline, _openclawOnline),
+          const SizedBox(width: 8),
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: Tooltip(
+              message: 'G2 Glasses: $_phase',
+              child: Container(
+                width: 10, height: 10,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: _phase == 'conversate' ? Colors.green
+                      : _phase == 'connecting' ? Colors.orange
+                      : Colors.red,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+      body: Row(
+        children: [
+          Expanded(child: _buildContent()),
+          if (_phase == 'conversate') _buildVuMeter(),
+        ],
+      ),
+    );
+  }
+
+  Widget _serviceIndicator(String label, bool online, bool ready) {
+    final color = !online ? Colors.red : ready ? Colors.green : Colors.orange;
+    final status = !online ? 'offline' : ready ? 'ready' : 'loading...';
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      child: Tooltip(
+        message: '$label: $status',
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8, height: 8,
+              decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+            ),
+            const SizedBox(width: 4),
+            Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _serviceChip(String label, bool online) {
+    return Chip(
+      avatar: Container(
+        width: 8, height: 8,
+        decoration: BoxDecoration(shape: BoxShape.circle, color: online ? Colors.green : Colors.red),
+      ),
+      label: Text(label, style: const TextStyle(fontSize: 12)),
+      visualDensity: VisualDensity.compact,
+    );
+  }
+
+  Widget _buildContent() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(_status, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey)),
+          const SizedBox(height: 16),
+
+          if (_phase == 'disconnected') ...[
+            // Mode selector
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Mode', style: Theme.of(context).textTheme.titleSmall),
+                    const SizedBox(height: 8),
+                    RadioListTile<String>(
+                      dense: true,
+                      title: const Text('Conversate'),
+                      subtitle: const Text('Always-on mic → Whisper → live transcription on glasses', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                      value: 'conversate',
+                      groupValue: _mode,
+                      onChanged: (v) => setState(() => _mode = v!),
+                    ),
+                    RadioListTile<String>(
+                      dense: true,
+                      title: const Text('Even AI'),
+                      subtitle: Text(
+                        'Mic → Whisper → OpenClaw (always answer) → Dashboard AI display'
+                        '${!_openclawOnline ? '\nOpenClaw offline!' : ''}',
+                        style: TextStyle(fontSize: 11, color: !_openclawOnline ? Colors.red : Colors.grey),
+                      ),
+                      value: 'even_ai',
+                      groupValue: _mode,
+                      onChanged: (v) => setState(() => _mode = v!),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            // Service status
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _serviceChip('Whisper', _whisperOnline && _whisperModelLoaded),
+                const SizedBox(width: 8),
+                _serviceChip('OpenClaw', _openclawOnline),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Center(child: ElevatedButton.icon(
+              onPressed: _connect,
+              icon: const Icon(Icons.bluetooth),
+              label: Text('Connect — ${_mode == 'even_ai' ? 'Even AI' : 'Conversate'}'),
+              style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16)),
+            )),
+          ],
+
+          if (_phase == 'connecting')
+            const Center(child: CircularProgressIndicator()),
+
+          if (_phase == 'conversate') ...[
+            if (_mode == 'conversate') ...[
+              Row(children: [
+                Expanded(child: TextField(
+                  controller: _textCtrl,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    hintText: 'Type text to display on glasses...',
+                  ),
+                  onSubmitted: (_) => _send(),
+                )),
+                const SizedBox(width: 8),
+                ElevatedButton(onPressed: _send, child: const Text('Send')),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  onPressed: _testAiCards,
+                  icon: const Icon(Icons.auto_awesome, size: 16),
+                  label: const Text('AI Cards'),
+                ),
+              ]),
+              const SizedBox(height: 8),
+            ],
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(onPressed: _disconnect, child: const Text('Disconnect')),
+            ),
+            const SizedBox(height: 8),
+
+            // Glasses display — conversation content
+            Expanded(
+              flex: 3,
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Glasses Display', style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Colors.green)),
+                      const SizedBox(height: 4),
+                      Expanded(
+                        child: ListView.builder(
+                          reverse: true,
+                          itemCount: _finalizedLines.length + (_currentPartial.isNotEmpty ? 1 : 0),
+                          itemBuilder: (context, index) {
+                            if (_currentPartial.isNotEmpty && index == 0) {
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 4),
+                                child: Text(_currentPartial, style: const TextStyle(fontFamily: 'Consolas', fontSize: 13, color: Colors.grey)),
+                              );
+                            }
+                            final lineIndex = _finalizedLines.length - 1 - (index - (_currentPartial.isNotEmpty ? 1 : 0));
+                            if (lineIndex < 0 || lineIndex >= _finalizedLines.length) return const SizedBox.shrink();
+                            final line = _finalizedLines[lineIndex];
+                            final isAi = line.startsWith('[AI]');
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 2),
+                              child: Text(line, style: TextStyle(
+                                fontFamily: 'Consolas', fontSize: 13,
+                                color: isAi ? Colors.cyanAccent : Colors.white,
+                              )),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            // Debug feed — protocol events
+            Expanded(
+              flex: 2,
+              child: Card(
+                color: Colors.grey.shade900,
+                child: Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Debug', style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Colors.orange)),
+                      const SizedBox(height: 4),
+                      Expanded(
+                        child: ListView.builder(
+                          reverse: true,
+                          itemCount: _debugLines.length,
+                          itemBuilder: (context, index) {
+                            final lineIndex = _debugLines.length - 1 - index;
+                            if (lineIndex < 0) return const SizedBox.shrink();
+                            return Text(
+                              _debugLines[lineIndex],
+                              style: const TextStyle(fontFamily: 'Consolas', fontSize: 10, color: Colors.orange),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVuMeter() {
+    return Container(
+      width: 24,
+      margin: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey.shade700),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: LayoutBuilder(builder: (context, constraints) {
+        final fillHeight = constraints.maxHeight * _vuLevel;
+        return Stack(
+          alignment: Alignment.bottomCenter,
+          children: [
+            Container(color: Colors.transparent),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 50),
+              height: fillHeight,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(3),
+                color: _vuLevel > 0.7 ? Colors.red
+                    : _vuLevel > 0.4 ? Colors.yellow
+                    : Colors.green,
+              ),
+            ),
+          ],
+        );
+      }),
+    );
+  }
+}

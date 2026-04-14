@@ -1,0 +1,135 @@
+// Even Realities G2 — Settings & Device Services
+// Reconstructed from BLE capture analysis + protocol decode
+//
+// Service 0x09: Device settings (brightness, battery, firmware)
+// Service 0x10: Onboarding skip
+// Service 0x80: Device config (auth, pipe role, time sync, heartbeat)
+
+syntax = "proto3";
+
+package even.g2.settings;
+
+// ============================================
+// G2 Setting Service (0x09)
+// ============================================
+
+message G2SettingPackage {
+  int32 command_id = 1;                             // See G2SettingCmd enum
+  int32 magic_random = 2;                           // Request/response matching
+  DeviceReceiveInfoFromApp receive_info = 3;        // Cmd=1: Phone sends settings to glasses
+  DeviceReceiveRequestFromApp receive_request = 4;  // Cmd=2: Phone requests info from glasses
+  DeviceSendInfoToApp send_info = 5;                // Cmd=3: Glasses sends unsolicited info
+}
+
+enum G2SettingCmd {
+  DEVICE_RECEIVE_INFO = 1;          // Phone -> glasses: push setting value
+  DEVICE_RECEIVE_REQUEST = 2;       // Phone -> glasses: request info
+  DEVICE_SEND_TO_APP = 3;          // Glasses -> phone: unsolicited status
+  DEVICE_RESPOND_TO_APP = 4;       // Glasses -> phone: response to request
+}
+
+// Phone sends brightness settings to glasses
+message DeviceReceiveInfoFromApp {
+  DeviceReceiveBrightness brightness = 1;           // CONFIRMED: brightness control
+}
+
+message DeviceReceiveBrightness {
+  int32 auto_adjust = 1;                            // 1 = auto brightness on, 0 = off
+  int32 brightness_level = 2;                       // Brightness value
+}
+
+// Phone requests device info
+message DeviceReceiveRequestFromApp {
+  int32 setting_info_type = 1;                      // 1 = APP_REQUIRE_BASIC_SETTING
+}
+
+// Glasses sends unsolicited status info (Cmd=3)
+message DeviceSendInfoToApp {
+  RecalibrationStatus current_recalibration_status = 1;
+  int32 silent_mode_switch = 2;                     // Silent mode toggle
+}
+
+message RecalibrationStatus {
+  // Fields TBD from captures
+}
+
+// Response fields (from Cmd=2 response, parsed from field 4 or 5):
+//   field 5:  string  leftSoftwareVersion   // CONFIRMED
+//   field 6:  string  rightSoftwareVersion  // CONFIRMED
+//   field 12: int32   battery (0-100)       // CONFIRMED
+//   field 13: int32   chargingStatus (0/1)  // CONFIRMED
+
+// ============================================
+// Onboarding Service (0x10)
+// ============================================
+
+message OnboardingDataPackage {
+  int32 command_id = 1;                             // 1 = CONFIG
+  int32 magic_random = 2;
+  OnboardingConfig config = 3;
+}
+
+message OnboardingConfig {
+  int32 process_id = 1;                             // 4 = FINISH (skip onboarding)
+}
+
+// ============================================
+// Device Settings Service (0x80)
+// ============================================
+
+message DevCfgDataPackage {
+  int32 command_id = 1;                             // See DevCfgCmd enum
+  int32 magic_random = 2;
+  AuthMgr auth = 3;                                 // Cmd=4: Authentication
+  PipeRoleChange pipe_role = 4;                     // Cmd=5: Pipe role assignment
+  BaseConnHeartBeat heartbeat = 13;                 // Cmd=14: Connection heartbeat
+  TimeSync time_sync = 128;                         // Cmd=128: Time synchronization
+}
+
+enum DevCfgCmd {
+  AUTHENTICATION = 4;
+  PIPE_ROLE_CHANGE = 5;
+  BASE_CONN_HEART_BEAT = 14;
+  TIME_SYNC_CMD = 128;
+}
+
+// Authentication handshake — sent to EACH ear separately
+message AuthMgr {
+  bool sec_auth = 1;                                // Always true
+  int32 phone_type = 2;                             // 3 = iOS, 4 = Android
+}
+
+// Pipe role — sent to RIGHT ear only
+message PipeRoleChange {
+  int32 as_cmd_role = 1;                            // 1 = RIGHT
+}
+
+// Time sync — sent to BOTH ears
+message TimeSync {
+  int32 timestamp = 1;                              // Unix timestamp (seconds)
+  int32 timezone = 2;                               // Hours from GMT (MentraOS says hours; our captures showed quarter-hours for UTC+2=8 — VERIFY)
+}
+
+// Connection heartbeat — sent every 5 seconds
+message BaseConnHeartBeat {
+  // Empty message
+}
+
+// ============================================
+// Connection & Authentication Sequence
+// ============================================
+// 1. Scan for "Even G2_" prefix devices
+// 2. Connect to BOTH left (_L_) and right (_R_) peripherals
+// 3. Discover services, enable notifications on 5402 and 6402
+// 4. Wait for both L+R initialized
+// 5. Auth LEFT:  DevCfg cmd=4, AuthMgr{secAuth=true, phoneType=4}  (200ms delay)
+// 6. Auth RIGHT: DevCfg cmd=4, AuthMgr{secAuth=true, phoneType=4}  (200ms delay)
+// 7. Pipe role:  DevCfg cmd=5, PipeRoleChange{asCmdRole=1} to RIGHT only (200ms delay)
+// 8. Time sync:  DevCfg cmd=128, TimeSync{timestamp, timezone} to BOTH (200ms delay)
+// 9. Skip onboarding: Onboarding cmd=1, config{processId=4} (500ms delay)
+// 10. Start heartbeats (5s interval), request battery/firmware info
+//
+// Heartbeat schedule:
+//   - EvenHub heartbeat (Cmd=12) every 5s
+//   - DevSettings heartbeat (Cmd=14) every 5s
+//   - Battery poll: every 10th EvenHub heartbeat (~50s)
