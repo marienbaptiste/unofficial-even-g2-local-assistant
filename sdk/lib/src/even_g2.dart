@@ -263,7 +263,7 @@ class EvenG2 {
   Future<void> _initServices() async {
     const d = Duration(milliseconds: 50);
 
-    // Second auth handshake (capture pkt 5513)
+    // Second auth handshake — REQUIRED
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x80, serviceLo: 0x00,
       payload: [0x08, 0x04, 0x10, ...Varint.encode(_nextMsgId()), 0x1A, 0x04, 0x08, 0x01, 0x10, 0x04],

@@ -378,12 +378,13 @@ class _G2PageState extends State<G2Page> {
         final logFile = File('${Platform.environment['APPDATA'] ?? '.'}/even_g2_debug.log');
         logFile.writeAsStringSync('--- Session ${DateTime.now()} ---\n');
         _g2.debugEvents.listen((e) {
-          if (e.packet.serviceHi == 0x07) {
-            final svc = '0x${e.packet.serviceHi.toRadixString(16).padLeft(2, "0")}-0x${e.packet.serviceLo.toRadixString(16).padLeft(2, "0")}';
-            final hex = e.packet.payload.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
-            logFile.writeAsStringSync('${DateTime.now()} $svc $hex\n', mode: FileMode.append);
+          final svc = '0x${e.packet.serviceHi.toRadixString(16).padLeft(2, "0")}-0x${e.packet.serviceLo.toRadixString(16).padLeft(2, "0")}';
+          final hex = e.packet.payload.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+          logFile.writeAsStringSync('${DateTime.now()} $svc [${ e.packet.payload.length}B] $hex\n', mode: FileMode.append);
+          // Show all events with 0x01 sub-service (events from glasses)
+          if (e.packet.serviceLo == 0x01) {
             setState(() {
-              _finalizedLines.add('$svc $hex');
+              _finalizedLines.add('EVT $svc $hex');
               if (_finalizedLines.length > 100) _finalizedLines.removeAt(0);
             });
           }
