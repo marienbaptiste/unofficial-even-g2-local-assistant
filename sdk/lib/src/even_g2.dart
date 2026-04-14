@@ -263,14 +263,21 @@ class EvenG2 {
   Future<void> _initServices() async {
     const d = Duration(milliseconds: 50);
 
-    // 1. Capability mode (0x80-0x20, type=5)
+    // Second auth handshake (capture pkt 5513)
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x80, serviceLo: 0x00,
+      payload: [0x08, 0x04, 0x10, ...Varint.encode(_nextMsgId()), 0x1A, 0x04, 0x08, 0x01, 0x10, 0x04],
+    ));
+    await Future.delayed(const Duration(milliseconds: 300));
+
+    // Capability mode (0x80-0x20, type=5)
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x80, serviceLo: 0x20,
       payload: [0x08, 0x05, 0x10, ...Varint.encode(_nextMsgId()), 0x22, 0x02, 0x08, 0x01],
     ));
     await Future.delayed(d);
 
-    // 2. Time sync (0x80-0x20, type=128)
+    // Time sync (0x80-0x20, type=128)
     final now = DateTime.now();
     final unixSec = now.millisecondsSinceEpoch ~/ 1000;
     final tzQuarters = now.timeZoneOffset.inMinutes ~/ 15;
@@ -279,9 +286,9 @@ class EvenG2 {
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x80, serviceLo: 0x20,
       payload: [
-        0x08, 0x80, 0x01, // type=128
+        0x08, 0x80, 0x01,
         0x10, ...Varint.encode(_nextMsgId()),
-        0x82, 0x08, // field 128 tag
+        0x82, 0x08,
         ...Varint.encode(2 + tsBytes.length + tzBytes.length),
         0x08, ...tsBytes,
         0x10, ...tzBytes,
@@ -289,13 +296,12 @@ class EvenG2 {
     ));
     await Future.delayed(d);
 
-    // 3. Settings init (0x09-0x20, type=1)
+    // 1. Settings init (0x09-0x20, type=1)
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x09, serviceLo: 0x20,
       payload: [
         0x08, 0x01, 0x10, ...Varint.encode(_nextMsgId()),
-        0x1A, 0x0C,
-        0x4A, 0x0A, 0x08, 0x00, 0x10, 0x00, 0x18, 0x00, 0x20, 0x02, 0x28, 0x01,
+        0x1A, 0x0C, 0x4A, 0x0A, 0x08, 0x00, 0x10, 0x00, 0x18, 0x00, 0x20, 0x02, 0x28, 0x01,
       ],
     ));
     await Future.delayed(d);
@@ -318,10 +324,50 @@ class EvenG2 {
     ));
     await Future.delayed(d);
 
-    // 7. Legacy hub init (0x81-0x20, type=1)
+    // 7. Display config (0x01-0x20, type=2) — lens layout
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x01, serviceLo: 0x20,
+      payload: [0x08, 0x02, 0x10, ...Varint.encode(_nextMsgId()),
+        0x22, 0x17, 0x12, 0x15, 0x08, 0x04, 0x10, 0x03, 0x1A, 0x03, 0x01, 0x02, 0x03,
+        0x20, 0x04, 0x2A, 0x04, 0x01, 0x03, 0x02, 0x02, 0x30, 0x00, 0x38, 0x01],
+    ));
+    await Future.delayed(d);
+
+    // 8. Legacy hub init (0x81-0x20, type=1)
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x81, serviceLo: 0x20,
       payload: [0x08, 0x01, 0x10, ...Varint.encode(_nextMsgId()), 0x1A, 0x00],
+    ));
+    await Future.delayed(d);
+
+    // 9. Unknown service (0x20-0x20, type=0 + type=1)
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x20, serviceLo: 0x20,
+      payload: [0x08, 0x00, 0x10, ...Varint.encode(_nextMsgId()), 0x1A, 0x02, 0x08, 0x00],
+    ));
+    await Future.delayed(d);
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x20, serviceLo: 0x20,
+      payload: [0x08, 0x01, 0x10, ...Varint.encode(_nextMsgId()), 0x22, 0x00],
+    ));
+    await Future.delayed(d);
+
+    // 14. Equalizer config (0x09-0x20, type=1)
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x09, serviceLo: 0x20,
+      payload: [0x08, 0x01, 0x10, ...Varint.encode(_nextMsgId()),
+        0x1A, 0x1A, 0x52, 0x18,
+        0x0A, 0x06, 0x08, 0x00, 0x10, 0x00, 0x18, 0x00,
+        0x0A, 0x06, 0x08, 0x00, 0x10, 0x01, 0x18, 0x00,
+        0x0A, 0x06, 0x08, 0x00, 0x10, 0x02, 0x18, 0x00],
+    ));
+    await Future.delayed(d);
+
+    // 15. Audio config (0x04-0x20, type=1)
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x04, serviceLo: 0x20,
+      payload: [0x08, 0x01, 0x10, ...Varint.encode(_nextMsgId()),
+        0x1A, 0x08, 0x08, 0x01, 0x10, 0x01, 0x18, 0x05, 0x28, 0x01],
     ));
     await Future.delayed(d);
   }
@@ -1169,14 +1215,10 @@ class G2Dashboard {
     _g2._ensureConnected();
     _sessionActive = true;
 
-    // 1. Send config
-    await _g2._send(Dashboard.buildConfig(_g2._nextSeq(), _g2._nextMsgId()));
-    await Future.delayed(const Duration(milliseconds: 50));
-    // 2. Acknowledge wake with BOUNDARY
-    await _g2._send(Dashboard.buildVoiceState(_g2._nextSeq(), _g2._nextMsgId(), Dashboard.stateBoundary));
-    await Future.delayed(const Duration(milliseconds: 50));
-    // 3. Confirm LISTENING
-    await _g2._send(Dashboard.buildVoiceState(_g2._nextSeq(), _g2._nextMsgId(), Dashboard.stateListeningStarted));
+    // Capture 20260414_011807 pkt 6914: phone sends ONLY state=2
+    await _g2._send(Dashboard.buildVoiceState(
+      _g2._nextSeq(), _g2._nextMsgId(), Dashboard.stateListeningActive,
+    ));
   }
 
   /// Send a live transcription update (type=3).
@@ -1269,8 +1311,8 @@ class G2Dashboard {
 
     _eventController.add(event);
 
-    // Emit on wake stream for BOUNDARY voice state events
-    if (event.isWake) {
+    // Wake = glasses send LISTENING_STARTED (state=1) per capture_20260414_011807
+    if (event.isListening) {
       _wakeController.add(event);
     }
   }

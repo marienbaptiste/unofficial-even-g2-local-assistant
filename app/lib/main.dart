@@ -374,10 +374,24 @@ class _G2PageState extends State<G2Page> {
       await _g2.connectToNearest();
 
       if (_mode == 'even_ai') {
-        // Even AI: listen for "Hey Even" wake word via clean SDK stream
+        // Log 0x07 packets to file for debugging
+        final logFile = File('${Platform.environment['APPDATA'] ?? '.'}/even_g2_debug.log');
+        logFile.writeAsStringSync('--- Session ${DateTime.now()} ---\n');
+        _g2.debugEvents.listen((e) {
+          if (e.packet.serviceHi == 0x07) {
+            final svc = '0x${e.packet.serviceHi.toRadixString(16).padLeft(2, "0")}-0x${e.packet.serviceLo.toRadixString(16).padLeft(2, "0")}';
+            final hex = e.packet.payload.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
+            logFile.writeAsStringSync('${DateTime.now()} $svc $hex\n', mode: FileMode.append);
+            setState(() {
+              _finalizedLines.add('$svc $hex');
+              if (_finalizedLines.length > 100) _finalizedLines.removeAt(0);
+            });
+          }
+        });
+
+        // Listen for wake
         _wakeSub = _g2.dashboard.onWake.listen((event) {
-          debugPrint('Hey Even wake: $event');
-          setState(() => _finalizedLines.add('>>> Hey Even detected'));
+          setState(() => _finalizedLines.add('>>> WAKE: $event'));
           _onEvenAiWake();
         });
 
@@ -417,13 +431,12 @@ class _G2PageState extends State<G2Page> {
     if (_aiSessionActive) return;
     _aiSessionActive = true;
 
-    setState(() => _status = 'Even AI: wake detected, starting session...');
+    setState(() => _status = 'Even AI: wake detected...');
 
     try {
-      // 1. Acknowledge wake (sends config + boundary + listening)
       await _g2.dashboard.ackWake();
+      setState(() => _status = 'Even AI: ack sent');
 
-      // 2. Start mic (raw mode — skip Conversate init to avoid kicking out of Dashboard)
       await _g2.mic.start(raw: true);
       _levelSub = _g2.mic.levelStream.listen((level) {
         setState(() => _vuLevel = level);
@@ -433,15 +446,27 @@ class _G2PageState extends State<G2Page> {
         _ws?.sink.add(packet);
       });
 
-      // 3. Keep session alive with heartbeats
       _dashboardHeartbeatTimer = Timer.periodic(
         const Duration(seconds: 5),
         (_) => _g2.dashboard.heartbeat().catchError((_) {}),
       );
 
-      setState(() => _status = 'Even AI: listening...');
+      // Test text
+      await _g2.dashboard.sendTranscription('Test 1');
+      await Future.delayed(const Duration(milliseconds: 300));
+      await _g2.dashboard.sendTranscription('Test 1 2 3');
+      await Future.delayed(const Duration(milliseconds: 300));
+      await _g2.dashboard.sendTranscription('Test 1 2 3 Hello!');
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _g2.dashboard.showThinking();
+      await Future.delayed(const Duration(seconds: 2));
+      await _g2.dashboard.streamResponse('Hello from local assistant!');
+      await _g2.dashboard.streamResponseDone();
+      setState(() => _status = 'Even AI: done. Say Hey Even again.');
     } catch (e) {
-      debugPrint('Even AI wake error: $e');
+      debugPrint('Even AI error: $e');
+      setState(() => _status = 'Even AI ERROR: $e');
+    } finally {
       _aiSessionActive = false;
     }
   }
@@ -634,68 +659,68 @@ class _G2PageState extends State<G2Page> {
             const Center(child: CircularProgressIndicator()),
 
           if (_phase == 'conversate') ...[
-            Row(children: [
-              Expanded(child: TextField(
-                controller: _textCtrl,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: 'Type text to display on glasses...',
+            if (_mode == 'conversate') ...[
+              Row(children: [
+                Expanded(child: TextField(
+                  controller: _textCtrl,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    hintText: 'Type text to display on glasses...',
+                  ),
+                  onSubmitted: (_) => _send(),
+                )),
+                const SizedBox(width: 8),
+                ElevatedButton(onPressed: _send, child: const Text('Send')),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  onPressed: _testAiCards,
+                  icon: const Icon(Icons.auto_awesome, size: 16),
+                  label: const Text('AI Cards'),
                 ),
-                onSubmitted: (_) => _send(),
-              )),
-              const SizedBox(width: 8),
-              ElevatedButton(onPressed: _send, child: const Text('Send')),
-              const SizedBox(width: 8),
-              ElevatedButton.icon(
-                onPressed: _testAiCards,
-                icon: const Icon(Icons.auto_awesome, size: 16),
-                label: const Text('AI Cards'),
-              ),
-            ]),
-            const SizedBox(height: 8),
+              ]),
+              const SizedBox(height: 8),
+            ],
             Align(
               alignment: Alignment.centerRight,
               child: TextButton(onPressed: _disconnect, child: const Text('Disconnect')),
             ),
+            const SizedBox(height: 8),
 
-            // Live transcription
-            if (_finalizedLines.isNotEmpty || _currentPartial.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Expanded(
-                child: Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Live Transcription', style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Colors.grey)),
-                        const SizedBox(height: 4),
-                        Expanded(
-                          child: ListView.builder(
-                            reverse: true,
-                            itemCount: _finalizedLines.length + (_currentPartial.isNotEmpty ? 1 : 0),
-                            itemBuilder: (context, index) {
-                              if (_currentPartial.isNotEmpty && index == 0) {
-                                return Padding(
-                                  padding: const EdgeInsets.only(bottom: 4),
-                                  child: Text(_currentPartial, style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Colors.grey)),
-                                );
-                              }
-                              final lineIndex = _finalizedLines.length - 1 - (index - (_currentPartial.isNotEmpty ? 1 : 0));
-                              if (lineIndex < 0 || lineIndex >= _finalizedLines.length) return const SizedBox.shrink();
+            // Streaming console — always visible
+            Expanded(
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Console', style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Colors.grey)),
+                      const SizedBox(height: 4),
+                      Expanded(
+                        child: ListView.builder(
+                          reverse: true,
+                          itemCount: _finalizedLines.length + (_currentPartial.isNotEmpty ? 1 : 0),
+                          itemBuilder: (context, index) {
+                            if (_currentPartial.isNotEmpty && index == 0) {
                               return Padding(
                                 padding: const EdgeInsets.only(bottom: 4),
-                                child: Text(_finalizedLines[lineIndex], style: Theme.of(context).textTheme.bodyLarge),
+                                child: Text(_currentPartial, style: const TextStyle(fontFamily: 'Consolas', fontSize: 12, color: Colors.grey)),
                               );
-                            },
-                          ),
+                            }
+                            final lineIndex = _finalizedLines.length - 1 - (index - (_currentPartial.isNotEmpty ? 1 : 0));
+                            if (lineIndex < 0 || lineIndex >= _finalizedLines.length) return const SizedBox.shrink();
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 2),
+                              child: Text(_finalizedLines[lineIndex], style: const TextStyle(fontFamily: 'Consolas', fontSize: 12)),
+                            );
+                          },
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
               ),
-            ],
+            ),
 
           ],
         ],
