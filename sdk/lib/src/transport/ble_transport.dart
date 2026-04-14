@@ -36,7 +36,8 @@ class G2Uuids {
 /// Handles scanning, connecting, GATT characteristic discovery,
 /// and raw read/write operations using universal_ble.
 class BleTransport {
-  String? _deviceId;
+  String? _deviceId;      // Primary device (left ear)
+  String? _deviceIdRight; // Secondary device (right ear)
 
   // Discovered service UUIDs (may differ in case from constants)
   String? _svcMain;
@@ -104,10 +105,8 @@ class BleTransport {
 
       final charLower = characteristicId.toLowerCase();
       if (charLower.contains('6402')) {
-        // Mic data
         _micController.add(value);
-      } else if (charLower.contains('5402')) {
-        // Main notify data
+      } else if (charLower.contains('5402') || charLower.contains('7402')) {
         _notifyController.add(value);
       }
     };
@@ -115,17 +114,12 @@ class BleTransport {
     await UniversalBle.connect(device.id);
     _isConnected = true;
     _connectionController.add(true);
-
-    // Wait for connection to stabilize
     await Future.delayed(const Duration(seconds: 1));
 
-    // Pair on connect (Windows requires this for service access)
     try {
       await UniversalBle.pair(device.id);
       await Future.delayed(const Duration(seconds: 1));
-    } catch (_) {
-      // Already paired or not needed on this platform
-    }
+    } catch (_) {}
 
     // Discover services (retry up to 3 times)
     List<BleService> services = [];
@@ -143,10 +137,12 @@ class BleTransport {
     }
 
     // Find the actual service UUIDs from discovery (case-insensitive match)
+    String? svcThird;
     for (final s in services) {
       final uuid = s.uuid.toLowerCase();
       if (uuid.contains('5450')) _svcMain = s.uuid;
       if (uuid.contains('6450')) _svcDisplay = s.uuid;
+      if (uuid.contains('7450')) svcThird = s.uuid;
     }
 
     if (_svcMain == null) {
@@ -156,7 +152,7 @@ class BleTransport {
     // 2 second delay after service discovery before subscribing (Windows fix)
     await Future.delayed(const Duration(seconds: 2));
 
-    // Subscribe to main notify characteristic
+    // Subscribe to main notify characteristic (5402)
     for (int attempt = 0; attempt < 3; attempt++) {
       try {
         await UniversalBle.setNotifiable(
@@ -171,6 +167,65 @@ class BleTransport {
         }
       }
     }
+
+    // Subscribe to third channel notify (7402)
+    if (svcThird != null) {
+      try {
+        await UniversalBle.setNotifiable(
+          device.id, svcThird, G2Uuids.charThirdNotify, BleInputProperty.notification,
+        );
+      } catch (_) {}
+    }
+  }
+
+  /// Connect a secondary device (right ear) and subscribe to its notifications.
+  /// The onValueChange callback already accepts data from any device.
+  Future<void> connectSecondary(G2Device device) async {
+    _deviceIdRight = device.id;
+
+    // Update callback to accept both devices
+    final primaryId = _deviceId;
+    final rightId = device.id;
+    UniversalBle.onValueChange = (String deviceId, String characteristicId, Uint8List value, [int? flags]) {
+      if (deviceId != primaryId && deviceId != rightId) return;
+      final charLower = characteristicId.toLowerCase();
+      if (charLower.contains('6402')) {
+        _micController.add(value);
+      } else if (charLower.contains('5402') || charLower.contains('7402')) {
+        _notifyController.add(value);
+      }
+    };
+
+    try {
+      await UniversalBle.connect(device.id);
+      await Future.delayed(const Duration(seconds: 2));
+
+      final services = await UniversalBle.discoverServices(device.id);
+      String? svcMain;
+      for (final s in services) {
+        if (s.uuid.toLowerCase().contains('5450')) svcMain = s.uuid;
+      }
+      if (svcMain != null) {
+        await Future.delayed(const Duration(seconds: 1));
+        await UniversalBle.setNotifiable(
+          device.id, svcMain, G2Uuids.charNotify, BleInputProperty.notification,
+        );
+      }
+    } catch (e) {
+      // Right ear failed — continue with left only
+      _deviceIdRight = null;
+    }
+  }
+
+  /// Write to RIGHT ear (for commands that need the command role device).
+  Future<void> writeRight(Uint8List data) async {
+    if (_deviceIdRight == null) {
+      // Fall back to primary if no right ear
+      return write(data);
+    }
+    await UniversalBle.writeValue(
+      _deviceIdRight!, _svcMain!, G2Uuids.charWrite, data, BleOutputProperty.withoutResponse,
+    );
   }
 
   /// Subscribe to mic audio stream (6402).

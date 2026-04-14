@@ -43,6 +43,7 @@ class _G2PageState extends State<G2Page> {
 
   // Even AI session state
   StreamSubscription? _wakeSub;
+  StreamSubscription? _eventSub;
   bool _aiSessionActive = false;
   Timer? _dashboardHeartbeatTimer;
 
@@ -107,6 +108,7 @@ class _G2PageState extends State<G2Page> {
     _levelSub?.cancel();
     _micSub?.cancel();
     _wakeSub?.cancel();
+    _eventSub?.cancel();
     _dashboardHeartbeatTimer?.cancel();
     _disconnectVoice();
     _textCtrl.dispose();
@@ -245,11 +247,17 @@ class _G2PageState extends State<G2Page> {
   Future<void> _runEvenAiResponse(String transcript) async {
     if (!_openclawOnline || _aiProcessing) return;
 
+    // Stop mic + Whisper — transcription is done, no more audio needed
+    _micSub?.cancel(); _micSub = null;
+    _levelSub?.cancel(); _levelSub = null;
+    _disconnectVoice();
+    if (_g2.mic.isActive) _g2.mic.stop().catchError((_) => <Uint8List>[]);
+
     _aiHistory.add({'role': 'user', 'content': 'This is a question that expects always an answer: $transcript'});
     while (_aiHistory.length > 20) _aiHistory.removeAt(0);
 
     _aiProcessing = true;
-    setState(() => _status = 'Even AI: thinking...');
+    setState(() { _status = 'Even AI: thinking...'; _vuLevel = 0; });
 
     try {
       // Signal transcription done + show thinking on glasses
@@ -284,13 +292,20 @@ class _G2PageState extends State<G2Page> {
           await _g2.dashboard.streamResponse(content);
           await Future.delayed(const Duration(milliseconds: 100));
           await _g2.dashboard.streamResponseDone();
+
+          // End session — capture_20260414_011807 session 1:
+          // phone sends endSession (state=3) right after response done,
+          // glasses confirm with BOUNDARY event.
+          await _g2.dashboard.endSession();
+
           setState(() {
             _finalizedLines.add(content);
             if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
-            _status = 'Even AI: ready';
+            _status = 'Even AI: listening for "Hey Even"...';
           });
         } else {
-          setState(() => _status = 'Even AI: ready');
+          await _g2.dashboard.endSession();
+          setState(() => _status = 'Even AI: listening for "Hey Even"...');
         }
       }
     } catch (e) {
@@ -298,22 +313,24 @@ class _G2PageState extends State<G2Page> {
       setState(() => _status = 'Even AI: error');
     } finally {
       _aiProcessing = false;
-      _endEvenAiSession();
+      _cleanupAiSession();
     }
   }
 
-  void _endEvenAiSession() {
-    _levelSub?.cancel();
-    _levelSub = null;
+  /// Clean up AI session state without sending endSession() to glasses.
+  /// The glasses decide when the session ends (via BOUNDARY event).
+  void _cleanupAiSession() {
+    _dashboardHeartbeatTimer?.cancel();
+    _dashboardHeartbeatTimer = null;
+    _levelSub?.cancel(); _levelSub = null;
+    _micSub?.cancel(); _micSub = null;
     _disconnectVoice();
     if (_g2.mic.isActive) _g2.mic.stop().catchError((_) => <Uint8List>[]);
-    // End session on glasses — stops auto-heartbeat and returns to idle
-    try { _g2.dashboard.endSession(); } catch (_) {}
     _aiSessionActive = false;
+    _aiProcessing = false;
     setState(() {
       _vuLevel = 0;
       _currentPartial = '';
-      _status = 'Even AI: listening for "Hey Even"...';
     });
   }
 
@@ -390,10 +407,18 @@ class _G2PageState extends State<G2Page> {
           }
         });
 
-        // Listen for wake
+        // Listen for wake signal (state=1 = mic open, audio flowing)
         _wakeSub = _g2.dashboard.onWake.listen((event) {
-          setState(() => _finalizedLines.add('>>> WAKE: $event'));
+          setState(() => _finalizedLines.add('>>> SIGNAL: mic open (state=1)'));
           _onEvenAiWake();
+        });
+
+        // Listen for BOUNDARY events (state=3 = session end from glasses)
+        _eventSub = _g2.dashboard.onEvent.listen((event) {
+          if (event.isBoundary && _aiSessionActive) {
+            setState(() => _finalizedLines.add('>>> BOUNDARY: session ended by glasses'));
+            _onGlassesBoundary();
+          }
         });
 
         setState(() {
@@ -426,62 +451,68 @@ class _G2PageState extends State<G2Page> {
     }
   }
 
-  /// Called when glasses send "Hey Even" wake word event.
-  /// Replays the exact protocol from capture_20260412_234826 session 2.
+  /// Called when glasses send LISTENING_STARTED (state=1) — mic is open, audio flowing.
+  /// Protocol from capture Let's_test_the_Hey_Even_AI_prompt_20260413_234655.
   Future<void> _onEvenAiWake() async {
-    if (_aiSessionActive) return;
+    // Back-to-back: if previous session still active, reset first
+    if (_aiSessionActive) {
+      _cleanupAiSession();
+      // Per capture: send config + boundary to reset old session
+      await _g2.dashboard.sendConfig().catchError((_) {});
+      await _g2.dashboard.endSession().catchError((_) {});
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
     _aiSessionActive = true;
 
-    setState(() => _status = 'Even AI: wake detected...');
+    setState(() => _status = 'Even AI: mic open, processing audio...');
 
     try {
+      // ACK: confirm we're processing audio (state=2 + heartbeat)
       await _g2.dashboard.ackWake();
-      setState(() => _status = 'Even AI: ack sent');
 
+      // Continue heartbeats at ~1.5s (matches capture interval)
+      _dashboardHeartbeatTimer?.cancel();
+      _dashboardHeartbeatTimer = Timer.periodic(
+        const Duration(milliseconds: 1500),
+        (_) => _g2.dashboard.heartbeat().catchError((_) {}),
+      );
+
+      // Subscribe to glasses mic audio (LC3 on char 6402)
       await _g2.mic.start(raw: true);
       _levelSub = _g2.mic.levelStream.listen((level) {
         setState(() => _vuLevel = level);
       });
+
+      // Connect Whisper WS and pipe audio frames into it
       _connectVoice();
       _micSub = _g2.mic.packetStream.listen((packet) {
         _ws?.sink.add(packet);
       });
 
-      _dashboardHeartbeatTimer = Timer.periodic(
-        const Duration(seconds: 5),
-        (_) => _g2.dashboard.heartbeat().catchError((_) {}),
-      );
-
-      // Test text
-      await _g2.dashboard.sendTranscription('Test 1');
-      await Future.delayed(const Duration(milliseconds: 300));
-      await _g2.dashboard.sendTranscription('Test 1 2 3');
-      await Future.delayed(const Duration(milliseconds: 300));
-      await _g2.dashboard.sendTranscription('Test 1 2 3 Hello!');
-      await Future.delayed(const Duration(milliseconds: 500));
-      await _g2.dashboard.showThinking();
-      await Future.delayed(const Duration(seconds: 2));
-      await _g2.dashboard.streamResponse('Hello from local assistant!');
-      await _g2.dashboard.streamResponseDone();
-      setState(() => _status = 'Even AI: done. Say Hey Even again.');
+      setState(() => _status = 'Even AI: listening...');
+      // Audio flows: glasses mic → BLE char 6402 → phone → Whisper WS
+      // Whisper calls _handleEvenAiTranscript via WebSocket listener (line 167)
     } catch (e) {
-      debugPrint('Even AI error: $e');
+      debugPrint('Even AI wake error: $e');
       setState(() => _status = 'Even AI ERROR: $e');
-    } finally {
-      _aiSessionActive = false;
+      _cleanupAiSession();
     }
   }
 
+  /// Called when glasses send BOUNDARY (state=3) — session is over.
+  void _onGlassesBoundary() {
+    // ACK the boundary
+    _g2.dashboard.endSession().catchError((_) {});
+    _cleanupAiSession();
+    setState(() => _status = 'Even AI: listening for "Hey Even"...');
+  }
+
   Future<void> _disconnect() async {
-    _levelSub?.cancel();
-    _levelSub = null;
+    _cleanupAiSession();
     _wakeSub?.cancel();
     _wakeSub = null;
-    _dashboardHeartbeatTimer?.cancel();
-    _dashboardHeartbeatTimer = null;
-    _aiSessionActive = false;
-    _disconnectVoice();
-    if (_g2.mic.isActive) await _g2.mic.stop();
+    _eventSub?.cancel();
+    _eventSub = null;
     await _g2.disconnect();
     setState(() {
       _phase = 'disconnected';

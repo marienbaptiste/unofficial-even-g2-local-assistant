@@ -75,6 +75,7 @@ class EvenG2 {
   bool _autoReconnect = true;
   bool _reconnecting = false;
   G2Device? _lastDevice;
+  G2Device? _lastRightDevice;
   Duration _reconnectDelay = const Duration(seconds: 3);
   int _reconnectAttempts = 0;
   static const int _maxReconnectAttempts = 10;
@@ -139,11 +140,16 @@ class EvenG2 {
     final devices = await scan(timeout: scanTimeout);
     if (devices.isEmpty) throw StateError('No Even G2 glasses found');
 
-    final device = devices.firstWhere(
-      (d) => d.name.contains('_L_'),
-      orElse: () => devices.first,
-    );
-    await connect(device);
+    // Connect BOTH ears — left for display, right for AI events
+    final left = devices.where((d) => d.name.contains('_L_'));
+    final right = devices.where((d) => d.name.contains('_R_'));
+    final primary = left.isNotEmpty ? left.first : devices.first;
+    final secondary = right.isNotEmpty ? right.first : null;
+    // Connect left first, then right
+    await connect(primary);
+    if (secondary != null) {
+      await _transport.connectSecondary(secondary);
+    }
   }
 
   /// Connect to a specific G2 device from a [scan] result.
@@ -259,25 +265,26 @@ class EvenG2 {
   /// which features the phone supports. Without this, the AI listening
   /// interface doesn't activate on "Hey Even".
   ///
-  /// Packet payloads from BLE capture capture_20260412_225605.
+  /// Sequence matched to BLE capture capture_20260414_083412 (pkt#39060-39755).
+  /// auth.dart Auth 2 sends f4.f1=2 (callback registration for wake events).
   Future<void> _initServices() async {
     const d = Duration(milliseconds: 50);
 
-    // Second auth handshake — REQUIRED
+    // Second auth handshake (0x80-0x00, cmd=4) — capture pkt#39365
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x80, serviceLo: 0x00,
       payload: [0x08, 0x04, 0x10, ...Varint.encode(_nextMsgId()), 0x1A, 0x04, 0x08, 0x01, 0x10, 0x04],
     ));
     await Future.delayed(const Duration(milliseconds: 300));
 
-    // Capability mode (0x80-0x20, type=5)
+    // Capability mode (0x80-0x20, type=5) — capture pkt#39384
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x80, serviceLo: 0x20,
-      payload: [0x08, 0x05, 0x10, ...Varint.encode(_nextMsgId()), 0x22, 0x02, 0x08, 0x01],
+      payload: [0x08, 0x05, 0x10, ...Varint.encode(_nextMsgId()), 0x22, 0x02, 0x08, 0x02], // f4.f1=2 — wake detection
     ));
     await Future.delayed(d);
 
-    // Time sync (0x80-0x20, type=128)
+    // Time sync (0x80-0x20, type=128) — capture pkt#39396
     final now = DateTime.now();
     final unixSec = now.millisecondsSinceEpoch ~/ 1000;
     final tzQuarters = now.timeZoneOffset.inMinutes ~/ 15;
@@ -296,7 +303,7 @@ class EvenG2 {
     ));
     await Future.delayed(d);
 
-    // 1. Settings init (0x09-0x20, type=1)
+    // 1. Settings init (0x09-0x20, type=1) — capture pkt#39443
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x09, serviceLo: 0x20,
       payload: [
@@ -306,25 +313,94 @@ class EvenG2 {
     ));
     await Future.delayed(d);
 
-    // 4. Display state (0x0D-0x20, type=0)
+    // 2. STT config (0x03-0x20, type=0) — capture pkt#39476
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x03, serviceLo: 0x20,
+      payload: [
+        0x08, 0x00, 0x10, ...Varint.encode(_nextMsgId()),
+        0x1a, 0x63, 0x08, 0x0a, 0x12, 0x04, 0x08, 0x00, 0x20, 0x04,
+        0x12, 0x04, 0x08, 0x00, 0x20, 0x0b, 0x12, 0x04, 0x08, 0x00,
+        0x20, 0x06, 0x12, 0x04, 0x08, 0x00, 0x20, 0x05, 0x12, 0x04,
+        0x08, 0x00, 0x20, 0x08, 0x12, 0x04, 0x08, 0x00, 0x20, 0x07,
+        0x12, 0x04, 0x08, 0x00, 0x20, 0x01, 0x12, 0x05, 0x08, 0x00,
+        0x20, 0x8a, 0x02, 0x12, 0x1b, 0x08, 0x01, 0x10, 0x01, 0x1a,
+        0x12, 0x73, 0x61, 0x6c, 0x65, 0x73, 0x65, 0x79, 0x65, 0x2d,
+        0x75, 0x6e, 0x69, 0x76, 0x65, 0x72, 0x73, 0x61, 0x6c, 0x20,
+        0xd1, 0x50, 0x12, 0x11, 0x08, 0x01, 0x10, 0x01, 0x1a, 0x08,
+        0x73, 0x6f, 0x50, 0x48, 0x49, 0x43, 0x4f, 0x4e, 0x20, 0xdb,
+        0x4e,
+      ],
+    ));
+    await Future.delayed(d);
+
+    // 3. Display state (0x0D-0x20, type=0) — capture pkt#39490
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x0D, serviceLo: 0x20,
       payload: [0x08, 0x00, 0x10, ...Varint.encode(_nextMsgId())],
     ));
     await Future.delayed(d);
 
-    // 5. Dashboard / AI init (0x07-0x20, type=10)
+    // 4. Tasks status (0x0C-0x20, type=2) — capture pkt#39506
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x0C, serviceLo: 0x20,
+      payload: [
+        0x08, 0x02, 0x10, ...Varint.encode(_nextMsgId()),
+        0x22, 0x04, 0x08, 0x01, 0x10, 0x00,
+      ],
+    ));
+    await Future.delayed(d);
+
+    // 5. Dashboard / AI init (0x07-0x20, type=10) — capture pkt#39524
     await _send(Dashboard.buildConfig(_nextSeq(), _nextMsgId()));
     await Future.delayed(d);
 
-    // 6. Settings query (0x09-0x20, type=2)
+    // 5b. Display/health config (0x0E-0x20, type=4) — required for AI interface
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x0E, serviceLo: 0x20,
+      payload: [
+        0x08, 0x04, 0x10, ...Varint.encode(_nextMsgId()),
+        0x32, 0x58, 0x0a, 0x54, 0x08, 0x03, 0x12, 0x4e, 0x45, 0x6e,
+        0x65, 0x72, 0x67, 0x79, 0x20, 0x6f, 0x75, 0x74, 0x70, 0x75,
+        0x74, 0x20, 0x64, 0x69, 0x70, 0x70, 0x65, 0x64, 0x3b, 0x20,
+        0x61, 0x64, 0x64, 0x20, 0x73, 0x68, 0x6f, 0x72, 0x74, 0x20,
+        0x6d, 0x6f, 0x76, 0x65, 0x6d, 0x65, 0x6e, 0x74, 0x20, 0x62,
+        0x75, 0x72, 0x73, 0x74, 0x73, 0x20, 0x74, 0x6f, 0x20, 0x72,
+        0x65, 0x74, 0x75, 0x72, 0x6e, 0x20, 0x74, 0x6f, 0x20, 0x79,
+        0x6f, 0x75, 0x72, 0x20, 0x75, 0x73, 0x75, 0x61, 0x6c, 0x20,
+        0x72, 0x68, 0x79, 0x74, 0x68, 0x6d, 0x18, 0x00, 0x10, 0x00,
+      ],
+    ));
+    await Future.delayed(d);
+
+    // 6. Skip onboarding (0x10-0x20, type=1) — capture pkt#39542
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x10, serviceLo: 0x20,
+      payload: [
+        0x08, 0x01, 0x10, ...Varint.encode(_nextMsgId()),
+        0x1a, 0x02, 0x08, 0x04,
+      ],
+    ));
+    await Future.delayed(d);
+
+    // 7. Ring presence (0x91-0x20, type=1) — capture pkt#39560
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x91, serviceLo: 0x20,
+      payload: [
+        0x08, 0x01, 0x10, ...Varint.encode(_nextMsgId()),
+        0x1a, 0x0c, 0x0a, 0x06, 0x6c, 0xab, 0x8e, 0x19, 0x25, 0xeb,
+        0x10, 0x01, 0x18, 0x00,
+      ],
+    ));
+    await Future.delayed(d);
+
+    // 8. Settings query (0x09-0x20, type=2) — capture pkt#39572
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x09, serviceLo: 0x20,
       payload: [0x08, 0x02, 0x10, ...Varint.encode(_nextMsgId()), 0x22, 0x02, 0x08, 0x01],
     ));
     await Future.delayed(d);
 
-    // 7. Display config (0x01-0x20, type=2) — lens layout
+    // 9. Display config (0x01-0x20, type=2) — capture pkt#39621
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x01, serviceLo: 0x20,
       payload: [0x08, 0x02, 0x10, ...Varint.encode(_nextMsgId()),
@@ -333,14 +409,14 @@ class EvenG2 {
     ));
     await Future.delayed(d);
 
-    // 8. Legacy hub init (0x81-0x20, type=1)
+    // 10. EvenHub init (0x81-0x20, type=1) — capture pkt#39702
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x81, serviceLo: 0x20,
       payload: [0x08, 0x01, 0x10, ...Varint.encode(_nextMsgId()), 0x1A, 0x00],
     ));
     await Future.delayed(d);
 
-    // 9. Unknown service (0x20-0x20, type=0 + type=1)
+    // 11. Commit (0x20-0x20, type=0 + type=1) — capture pkt#39714+39720
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x20, serviceLo: 0x20,
       payload: [0x08, 0x00, 0x10, ...Varint.encode(_nextMsgId()), 0x1A, 0x02, 0x08, 0x00],
@@ -352,7 +428,7 @@ class EvenG2 {
     ));
     await Future.delayed(d);
 
-    // 14. Equalizer config (0x09-0x20, type=1)
+    // 12. Equalizer config (0x09-0x20, type=1) — capture pkt#39729
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x09, serviceLo: 0x20,
       payload: [0x08, 0x01, 0x10, ...Varint.encode(_nextMsgId()),
@@ -363,11 +439,40 @@ class EvenG2 {
     ));
     await Future.delayed(d);
 
-    // 15. Audio config (0x04-0x20, type=1)
+    // 13. Audio config (0x04-0x20, type=1) — capture pkt#39740
     await _send(PacketBuilder.build(
       seq: _nextSeq(), serviceHi: 0x04, serviceLo: 0x20,
       payload: [0x08, 0x01, 0x10, ...Varint.encode(_nextMsgId()),
         0x1A, 0x08, 0x08, 0x01, 0x10, 0x01, 0x18, 0x05, 0x28, 0x01],
+    ));
+    await Future.delayed(d);
+
+    // 14. Widget batch (0x0E-0x20, type=2) — capture pkt#40344
+    // Full dashboard widget layout. Last packet before 0x07-0x01 wake event fires.
+    // Widgets: 2=stocks(10s), 3=news(2s), 4=general, 5=intensity, 6=balance, 9=unknown
+    await _send(PacketBuilder.build(
+      seq: _nextSeq(), serviceHi: 0x0E, serviceLo: 0x20,
+      payload: [
+        0x08, 0x02, 0x10, ...Varint.encode(_nextMsgId()),
+        // field4 (tag 0x22), length 138 (varint 0x8A 0x01)
+        0x22, 0x8A, 0x01,
+        // f4.f1=1 (batch version)
+        0x08, 0x01,
+        // widget 2: stocks, refresh 10000ms
+        0x12, 0x15, 0x08, 0x02, 0x10, 0x90, 0x4E, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x25, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x30, 0x00, 0x38, 0x00,
+        // widget 3: news, refresh 2000ms, f3=1.0
+        0x12, 0x15, 0x08, 0x03, 0x10, 0xD0, 0x0F, 0x1D, 0x00, 0x00, 0x80, 0x3F, 0x25, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x30, 0x00, 0x38, 0x00,
+        // widget 4: general
+        0x12, 0x14, 0x08, 0x04, 0x10, 0x00, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x25, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x30, 0x00, 0x38, 0x00,
+        // widget 5: intensity, f3=63.0 f4=68.0
+        0x12, 0x14, 0x08, 0x05, 0x10, 0x00, 0x1D, 0x00, 0x00, 0x7C, 0x42, 0x25, 0x00, 0x00, 0x88, 0x42, 0x28, 0x00, 0x30, 0x00, 0x38, 0x00,
+        // widget 6: balance
+        0x12, 0x14, 0x08, 0x06, 0x10, 0x00, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x25, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x30, 0x00, 0x38, 0x00,
+        // widget 9: unknown
+        0x12, 0x14, 0x08, 0x09, 0x10, 0x00, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x25, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x30, 0x00, 0x38, 0x00,
+        // f3=0 (end marker)
+        0x18, 0x00,
+      ],
     ));
     await Future.delayed(d);
   }
@@ -1201,24 +1306,33 @@ class G2Dashboard {
 
   /// Acknowledge the wake word and start an AI session.
   ///
-  /// Protocol confirmed from BLE capture_20260412_234826 (session 2):
-  ///   #20857 << EVT type=1 state=3  (wake)
-  ///   #20859 >> CMD type=1 state=3  (ack wake)
-  ///   ... ~2800 packets gap (glasses opening mic) ...
-  ///   #23690 << EVT type=1 state=1  (LISTENING_STARTED)
-  ///   #23723 >> CMD type=10 config
-  ///   #23775 >> CMD type=1 state=2  (LISTENING_ACTIVE)
+  /// Protocol from BLE capture_20260414_011807:
+  ///   #6798  << EVT type=1 state=1  (LISTENING_STARTED — wake trigger)
+  ///   #6914  >> CMD type=1 state=2  (LISTENING_ACTIVE — ack)
+  ///   #7034  >> CMD type=9 f11={1}  (heartbeat — immediate)
   ///
   /// Call this immediately after receiving an [onWake] event.
-  /// Returns when the glasses are ready for transcription.
   Future<void> ackWake() async {
     _g2._ensureConnected();
     _sessionActive = true;
 
-    // Capture 20260414_011807 pkt 6914: phone sends ONLY state=2
+    // 1. Confirm listening (state=2)
     await _g2._send(Dashboard.buildVoiceState(
       _g2._nextSeq(), _g2._nextMsgId(), Dashboard.stateListeningActive,
     ));
+
+    // 2. Immediate heartbeat — capture always sends type=9 right after ack
+    await _g2._send(Dashboard.buildHeartbeat(
+      _g2._nextSeq(), _g2._nextMsgId(),
+    ));
+  }
+
+  /// Send a config packet (type=10) to (re)activate AI listening.
+  ///
+  /// Used during init and at the start of back-to-back sessions.
+  Future<void> sendConfig() async {
+    _g2._ensureConnected();
+    await _g2._send(Dashboard.buildConfig(_g2._nextSeq(), _g2._nextMsgId()));
   }
 
   /// Send a live transcription update (type=3).

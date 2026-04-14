@@ -31,10 +31,10 @@
     "0x20-0x20": "Commit Command (from g2_transport.proto)",
     "0x81-0x00": "EvenHub Response",
     "0x81-0x20": "EvenHub",
-    "0x91-0x00": "Unknown-91 Response",
-    "0x91-0x20": "Unknown-91 Command",
-    "0xC4-0x00": "File Transfer (notify_whitelist.json)",
-    "0xC5-0x00": "AI/Display Session Control (bidirectional)",
+    "0x91-0x00": "Ring Presence Response",
+    "0x91-0x20": "Ring Presence Command (MAC + active flag)",
+    "0xC4-0x00": "File Transfer (notify_whitelist.json, custom binary header)",
+    "0xC5-0x00": "Notification Whitelist JSON (app enable/disable list)",
     "0xE0-0x00": "EvenHub App Service (createPage, imageUpdate, textUpdate, audioControl, heartbeat)"
   },
   "completed_phases": [
@@ -133,6 +133,14 @@
       "file": "captures/settings_focused_20260404_000022.log",
       "packets": 3107,
       "crc_ok": 3026
+    },
+    {
+      "label": "Full loop: app load + connect glasses+ring + 3x AI sessions + sleep",
+      "file": "captures/capture_20260414_083412.log",
+      "packets": 2416,
+      "crc_ok": 865,
+      "services": 33,
+      "notes": "5 reconnection cycles visible (Samsung snoop buffer). FW 2.1.1.12, battery 100->83%. Full init sequence decoded (23 steps). Ring presence (0x91), STT config (0x03), notification whitelist (0xC5), widget dashboard (0x0E batch), news articles (0x01 type=9), DevSettings heartbeat (cmd=14), TTS audio event (type=8). AI sessions: 'OK hear me?', 'time in Geneva?', 'temperature in Geneva?'"
     }
   ],
   "notes": [
@@ -153,8 +161,8 @@
     "Service 0x0B confirmed as Conversate - real-time transcription with partial/final markers",
     "Service 0x0E-0x20 also carries R1 ring health insights (HR analysis text in field 2)",
     "Service 0x80-0x00 contains ring device name in field 3: EVEN R1_8EAB6C",
-    "Service 0xC4 confirmed as audio - spikes during both AI and Conversate voice input",
-    "Service 0xC5 spiked from 6 to 28 during Even AI - AI session control",
+    "CORRECTED: Service 0xC4 is File Transfer (notify_whitelist.json), NOT audio. Header: [5B zeros][4B filesize_LE][4B checksum][path_string][zero padding to 93B]",
+    "CORRECTED: Service 0xC5 is Notification Whitelist JSON (app enable/disable list), NOT AI session control. JSON with calendar_enable, call_enable, msg_enable, app.list[{id,name}]",
     "Sub-service pattern: 0x00=response, 0x01=event/ack, 0x20=command/data",
     "Conversate protobuf: init(type=1), data(type=6, field8={text,is_final}), heartbeat(type=0xFF), ack(type=0xA2)",
     "Audio codec CONFIRMED: LC3 32kbps, 5x40B frames per 205B BLE packet, 10ms/16kHz/mono",
@@ -186,7 +194,7 @@
     "Conversate type=7: User prompt display with field13.2 = transcribed text",
     "FULL AI PIPELINE WORKING: Glasses mic → Whisper STT → OpenClaw → glasses display. Published github.com/marienbaptiste/unofficial-even-g2-local-assistant",
     "Glasses do NOT distinguish left vs right touchpad or scroll direction - app handles context",
-    "Device status on 0x09-0x01: firmware 2.0.9.20, battery in field12 (84%), field8=30",
+    "Device status on 0x09-0x01: firmware 2.1.1.12 (updated from 2.0.9.20), battery in field12, field8=30, field11=1 means charging",
     "Display on/off via 0x0D-0x01: field3.1=1 means display on, empty field3 means display off",
     "SETTINGS via 0x09-0x20 (from focused capture with 10s gaps, mapped by order):",
     "  field3.field12.f1=1: init/sync sent before each setting group",
@@ -242,7 +250,29 @@
     "  Display canvas confirmed: 576x288 pixels (from capture analysis), quad-tile subset 400x200",
     "  EvenHub response fields: field4=StartupResCmd, field6=ImgResCmd, field8=RebuildResCmd, field10=TextResCmd",
     "  EvenHub error codes: 0=page_success, 4=img_success, 5=img_failed, 6=rebuild_success, 7=rebuild_failed, 8=text_success, 9=text_failed",
-    "  reserveFlag (status byte bit5): set to 1 for EvenHub/G2Setting/Onboarding, 0 for DevSettings"
+    "  reserveFlag (status byte bit5): set to 1 for EvenHub/G2Setting/Onboarding, 0 for DevSettings",
+    "FULL INIT SEQUENCE CONFIRMED (2026-04-14, from 5 reconnection cycles in single capture):",
+    "  EXACT ORDER: 1) 0x80 cmd=4 auth LEFT, 2) 0x80 cmd=5 pipe role f4={f1=1}, 3) 0x80 cmd=128 time sync",
+    "  4) 0x80 cmd=4 auth RIGHT, 5) 0x09 type=1 sensor/brightness config, 6) 0x03 type=0 STT models",
+    "  7) 0x0D type=0 device config, 8) 0x0C type=2 tasks query, 9) 0x07 type=10 dashboard init",
+    "  10) 0x10 type=1 skip onboarding, 11) 0x91 type=1 ring presence, 12) 0x09 type=2 battery/fw query",
+    "  13) 0x01 type=2 news/stock init, 14) 0x81 type=1 EvenHub init, 15) 0xC4 file transfer",
+    "  16) 0xC5 notification whitelist JSON, 17) 0x20 type=0+1 commit, 18) 0x09 type=1 button mapping",
+    "  19) 0x0C type=2 tasks refresh, 20) 0x80 cmd=128 second time sync, 21) 0x04 type=1 display wake config",
+    "  SDK GAP: Our auth.dart only does steps 1-3+9. Steps 4-8, 10-21 not implemented.",
+    "0x91 RING PRESENCE DECODED (2026-04-14): f3={f1=<6B MAC: 6CAB8E1925EB>, f2=1(active), f3=0(status)}. Registers ring connectivity at init.",
+    "0x03 STT CONFIG DECODED (2026-04-14): f3.f1=10(count), f3.f2[]=repeated {f1=0/1(type), f2=0/1(enabled), f3=model_name, f4=id}. Models: 'saleseye-universal'(10321), 'soPHICON'(10075). Language IDs: 1,4,5,6,7,8,11,266",
+    "0xC5 NOTIFICATION WHITELIST DECODED (2026-04-14): JSON with calendar_enable, call_enable, msg_enable, ios_mail_enable, app.enable, app.list[{id:'com.discord',name:'Discord'},...12 apps]",
+    "0x0E WIDGET DASHBOARD DECODED (2026-04-14): type=1 individual, type=2 batch(145B). Widget IDs: 2=stocks(10000ms), 3=news(2000ms), 4=separator, 5=display_intensity(f3=left_brightness,f4=right_brightness as float32), 6=balance, 9=unknown",
+    "  Widget 5 brightness values: f3=63.0 (left), f4=68.0 (right) — PER-EYE brightness control!",
+    "0x01 NEWS ARTICLE DECODED (2026-04-14): type=9 f11={f2=0, f3=category(5), f6=headline, f7=timestamp_ms, f8=source_name, f9=body}. Multi-fragment up to 17 frags (3.9KB). type=2=init, type=5=separator, type=7=batch_marker",
+    "0x01-0x01 DASHBOARD SCROLL EVENTS (2026-04-14): type=3 f2=0x12345678(magic), f6={f1=position, f5/f3=sub_state}. Glasses report dashboard scroll/tap position.",
+    "cmd=14 on 0x80 = DEVSETTINGS HEARTBEAT (2026-04-14): f1=14, f2=msgId, f13=[](empty). 17 instances during AI sessions. Separate from Dashboard heartbeat (type=9).",
+    "0x07-0x01 type=8 = AUDIO TTS EVENT (2026-04-14): f10={f1=2}=TTS started playing. Sent after AI response streamed to glasses.",
+    "AUTH PIPE ROLE DISCREPANCY (2026-04-14): Capture shows cmd=5 f4={f1=1} but auth.dart sends f4={f1=2}. Comment says f1=2 required for wake detection — may be intentional override.",
+    "0x04 DISPLAY WAKE CONFIG (2026-04-14): f3={f1=1, f2=1, f3=5, f5=1}. Consistent across all 5 reconnections. f3=5 might be wake timeout (seconds).",
+    "0x20 COMMIT (2026-04-14): type=0 f3={f1=0} = reset, type=1 f4=[] = query -> response f4={f1=10}. f1=10 could be max dashboard items or version.",
+    "0x81 EVENHUB INIT RESPONSE (2026-04-14): f3={f1=100, f2=1}. f1=100 could be max container capacity."
   ],
   "remaining_captures": [
     {

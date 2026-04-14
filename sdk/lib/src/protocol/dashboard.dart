@@ -130,6 +130,7 @@ class Dashboard {
       0x08, 0x00, // f1=0
       0x10, 0x00, // f2=0
       0x22, ...Varint.encode(textBytes.length), ...textBytes, // f4=text
+      0x30, 0x00, // f6=0 (not done) — capture sends this explicitly
     ];
     final msgIdVarint = Varint.encode(msgId);
     final payload = <int>[
@@ -291,8 +292,10 @@ class EvenAiEvent {
   factory EvenAiEvent.unknown({required int type, required int seq}) =>
       EvenAiEvent._(type: EvenAiEventType.unknown, seq: seq, rawType: type);
 
-  /// True if this is a "Hey Even" wake word event (BOUNDARY state).
-  bool get isWake => type == EvenAiEventType.voiceState && state == Dashboard.stateBoundary;
+  /// True if this is a session boundary event (state=3).
+  /// Sent by glasses when a session ends, or as a reset between sessions.
+  /// NOT the wake signal — use [isListening] for that (state=1).
+  bool get isBoundary => type == EvenAiEventType.voiceState && state == Dashboard.stateBoundary;
 
   /// True if the glasses mic just opened (LISTENING_STARTED).
   bool get isListening => type == EvenAiEventType.voiceState && state == Dashboard.stateListeningStarted;
