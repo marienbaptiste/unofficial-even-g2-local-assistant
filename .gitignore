@@ -47,3 +47,4 @@ reverse-engineering/tools/signal.json
 # Temp
 *.raw
 .claude/settings.local.json
+reverse-engineering/tools/tmp/
