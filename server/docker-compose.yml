@@ -22,7 +22,7 @@ services:
     restart: unless-stopped
 
   openclaw:
-    image: ghcr.io/openclaw/openclaw:latest
+    image: even-g2-openclaw:latest
     container_name: even-g2-openclaw
     ports:
       - "18789:18789"
