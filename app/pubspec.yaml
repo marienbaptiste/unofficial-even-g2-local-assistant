@@ -2,7 +2,7 @@ name: g2_test_app
 description: Desktop test app for Even G2 SDK (Windows, macOS, Linux).
 publish_to: 'none'
 
-version: 0.3.0
+version: 0.4.0
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

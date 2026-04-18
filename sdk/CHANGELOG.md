@@ -1,3 +1,11 @@
+## 0.4.0 (2026-04-18)
+
+- **Dual-model AI routing** (in app layer, not SDK) — Qwen 2.5 7B local via Ollama for fast answers, ChatGPT via OpenClaw for complex questions with web access
+- **Automatic fallback** between models if one fails
+- **Model + timing in debug panel** — see which model answered and how long it took
+- **Enforced [AI] prefix** on all responses
+- **SOUL.md updated** to allow web search and tools for factual questions
+
 ## 0.3.0 (2026-04-14)
 
 - **Dual-ear BLE connection** — connects both left (display) and right (events) ears

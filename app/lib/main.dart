@@ -52,7 +52,28 @@ class _G2PageState extends State<G2Page> {
   static const _voiceUrl = 'http://localhost:8081';
   static const _voiceWsUrl = 'ws://localhost:8081';
   static const _openclawUrl = 'http://localhost:18789';
+  static const _ollamaUrl = 'http://localhost:11434';
+  static const _qwenModel = 'qwen2.5:7b';
   static final _openclawToken = _loadOpenClawToken();
+
+  // Routes simple questions to Qwen, complex ones to ChatGPT via OpenClaw.
+  // Returns true if ChatGPT should handle it.
+  bool _needsChatGpt(String text) {
+    final t = text.toLowerCase();
+    // Complex/web-needed keywords → ChatGPT
+    const complexKeywords = [
+      'weather', 'today', 'tomorrow', 'yesterday', 'news', 'search',
+      'find', 'explain', 'analyze', 'compare', 'research', 'latest',
+      'current', 'recent', 'stock', 'price', 'who won', 'why does',
+      'tell me about', 'how does', 'breaking', 'live',
+    ];
+    for (final k in complexKeywords) {
+      if (t.contains(k)) return true;
+    }
+    // Long questions likely need reasoning
+    if (text.split(' ').length > 15) return true;
+    return false;
+  }
 
   static String _loadOpenClawToken() {
     // --dart-define takes priority
@@ -73,6 +94,7 @@ class _G2PageState extends State<G2Page> {
   bool _whisperOnline = false;
   bool _whisperModelLoaded = false;
   bool _openclawOnline = false;
+  bool _qwenOnline = false;
   Timer? _healthTimer;
 
   // AI conversation history (rolling window for context)
@@ -142,6 +164,70 @@ class _G2PageState extends State<G2Page> {
     } catch (_) {
       setState(() => _openclawOnline = false);
     }
+
+    // Ollama (Qwen)
+    try {
+      final resp = await http.get(Uri.parse('$_ollamaUrl/api/tags'))
+          .timeout(const Duration(seconds: 2));
+      final online = resp.statusCode == 200;
+      if (online) {
+        final data = jsonDecode(resp.body);
+        final models = (data['models'] as List?) ?? [];
+        final hasQwen = models.any((m) => (m['name'] as String?)?.startsWith('qwen') == true);
+        setState(() => _qwenOnline = hasQwen);
+      } else {
+        setState(() => _qwenOnline = false);
+      }
+    } catch (_) {
+      setState(() => _qwenOnline = false);
+    }
+  }
+
+  /// Send a prompt to Qwen via Ollama. Returns the response text, or null on failure.
+  Future<String?> _askQwen(List<Map<String, String>> messages) async {
+    try {
+      final resp = await http.post(
+        Uri.parse('$_ollamaUrl/v1/chat/completions'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'model': _qwenModel,
+          'messages': messages,
+          'stream': false,
+        }),
+      ).timeout(const Duration(seconds: 30));
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        final content = data['choices']?[0]?['message']?['content']?.toString().trim() ?? '';
+        return content.isEmpty ? null : content;
+      }
+    } catch (e) {
+      debugPrint('Qwen error: $e');
+    }
+    return null;
+  }
+
+  /// Send a prompt to ChatGPT via OpenClaw. Returns the response text, or null on failure.
+  Future<String?> _askChatGpt(List<Map<String, String>> messages) async {
+    try {
+      final resp = await http.post(
+        Uri.parse('$_openclawUrl/v1/chat/completions'),
+        headers: {
+          'Authorization': 'Bearer $_openclawToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'model': 'openclaw', 'messages': messages}),
+      ).timeout(const Duration(seconds: 60));
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        final content = data['choices']?[0]?['message']?['content']?.toString().trim() ?? '';
+        return content.isEmpty ? null : content;
+      }
+    } catch (e) {
+      debugPrint('ChatGPT error: $e');
+    }
+    return null;
   }
 
   // -- Voice service WebSocket --
@@ -284,47 +370,67 @@ class _G2PageState extends State<G2Page> {
         ..._aiHistory,
       ];
 
-      final resp = await http.post(
-        Uri.parse('$_openclawUrl/v1/chat/completions'),
-        headers: {
-          'Authorization': 'Bearer $_openclawToken',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({'model': 'openclaw', 'messages': messages}),
-      ).timeout(const Duration(seconds: 60));
+      // Smart routing: Qwen for quick questions, ChatGPT for complex/web-needed
+      final useChatGpt = _needsChatGpt(transcript) || !_qwenOnline;
+      String? content;
+      String modelUsed = '';
+      final startTime = DateTime.now();
 
+      if (useChatGpt) {
+        setState(() => _debugLines.add('>>> Routing to ChatGPT'));
+        content = await _askChatGpt(messages);
+        modelUsed = 'GPT';
+        if (content == null) {
+          setState(() => _debugLines.add('>>> ChatGPT failed, trying Qwen'));
+          content = await _askQwen(messages);
+          if (content != null) modelUsed = 'Qwen (fallback)';
+        }
+      } else {
+        setState(() => _debugLines.add('>>> Routing to Qwen'));
+        content = await _askQwen(messages);
+        modelUsed = 'Qwen';
+        if (content == null) {
+          setState(() => _debugLines.add('>>> Qwen failed, falling back to ChatGPT'));
+          content = await _askChatGpt(messages);
+          if (content != null) modelUsed = 'GPT (fallback)';
+        }
+      }
+
+      final elapsed = DateTime.now().difference(startTime).inMilliseconds;
       thinkingTimer?.cancel();
 
-      if (resp.statusCode == 200) {
-        final data = jsonDecode(resp.body);
-        final content = data['choices']?[0]?['message']?['content']?.toString().trim() ?? '';
+      // Enforce [AI] prefix on every response (models sometimes forget)
+      if (content != null && !content.trimLeft().startsWith('[AI]')) {
+        content = '[AI] ${content.trimLeft()}';
+      }
 
-        if (content.isNotEmpty && content != '[SILENT]' && !content.contains('[SILENT]')) {
-          _aiHistory.add({'role': 'assistant', 'content': content});
-          // Stream AI response via Dashboard protocol
-          await _g2.dashboard.streamResponse(content);
-          await Future.delayed(const Duration(milliseconds: 100));
-          await _g2.dashboard.streamResponseDone();
+      if (content != null && content != '[SILENT]' && !content.contains('[SILENT]')) {
+        setState(() => _debugLines.add('[$modelUsed] ${elapsed}ms'));
+        _aiHistory.add({'role': 'assistant', 'content': content});
+        // Stream AI response via Dashboard protocol
+        await _g2.dashboard.streamResponse(content);
+        await Future.delayed(const Duration(milliseconds: 100));
+        await _g2.dashboard.streamResponseDone();
 
-          // Keep response visible — send heartbeats before ending
-          try {
-            for (int i = 0; i < 5; i++) {
-              await Future.delayed(const Duration(milliseconds: 1500));
-              if (!_g2.isConnected) break;
-              await _g2.dashboard.heartbeat();
-            }
-            if (_g2.isConnected) await _g2.dashboard.endSession();
-          } catch (_) {}
+        // Keep response visible — send heartbeats before ending
+        try {
+          for (int i = 0; i < 5; i++) {
+            await Future.delayed(const Duration(milliseconds: 1500));
+            if (!_g2.isConnected) break;
+            await _g2.dashboard.heartbeat();
+          }
+          if (_g2.isConnected) await _g2.dashboard.endSession();
+        } catch (_) {}
 
-          setState(() {
-            _finalizedLines.add(content);
-            if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
-            _status = 'Even AI: listening for "Hey Even"...';
-          });
-        } else {
-          await _g2.dashboard.endSession();
-          setState(() => _status = 'Even AI: listening for "Hey Even"...');
-        }
+        setState(() {
+          _finalizedLines.add(content!);
+          if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
+          _status = 'Even AI: listening for "Hey Even"...';
+        });
+      } else {
+        setState(() => _debugLines.add('>>> Both models failed or silent'));
+        if (_g2.isConnected) await _g2.dashboard.endSession();
+        setState(() => _status = 'Even AI: listening for "Hey Even"...');
       }
     } catch (e) {
       thinkingTimer?.cancel();
@@ -373,30 +479,46 @@ class _G2PageState extends State<G2Page> {
         ..._aiHistory,
       ];
 
-      final resp = await http.post(
-        Uri.parse('$_openclawUrl/v1/chat/completions'),
-        headers: {
-          'Authorization': 'Bearer $_openclawToken',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({'model': 'openclaw', 'messages': messages}),
-      ).timeout(const Duration(seconds: 15));
+      // Smart routing: Qwen for quick questions, ChatGPT for complex/web-needed
+      final useChatGpt = _needsChatGpt(transcript) || !_qwenOnline;
+      String? content;
+      String modelUsed = '';
+      final startTime = DateTime.now();
 
-      if (resp.statusCode == 200) {
-        final data = jsonDecode(resp.body);
-        final content = data['choices']?[0]?['message']?['content']?.toString().trim() ?? '';
-
-        if (content.isNotEmpty && content != '[SILENT]' && !content.contains('[SILENT]')) {
-          _aiHistory.add({'role': 'assistant', 'content': content});
-          _safeDisplay(content, isFinal: true);
-          setState(() {
-            _finalizedLines.add(content);
-            if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
-          });
+      if (useChatGpt) {
+        content = await _askChatGpt(messages);
+        modelUsed = 'GPT';
+        if (content == null) {
+          content = await _askQwen(messages);
+          if (content != null) modelUsed = 'Qwen (fallback)';
+        }
+      } else {
+        content = await _askQwen(messages);
+        modelUsed = 'Qwen';
+        if (content == null) {
+          content = await _askChatGpt(messages);
+          if (content != null) modelUsed = 'GPT (fallback)';
         }
       }
+
+      final elapsed = DateTime.now().difference(startTime).inMilliseconds;
+
+      // Enforce [AI] prefix (models sometimes forget)
+      if (content != null && !content.trimLeft().startsWith('[AI]')) {
+        content = '[AI] ${content.trimLeft()}';
+      }
+
+      if (content != null && content != '[SILENT]' && !content.contains('[SILENT]')) {
+        setState(() => _debugLines.add('[$modelUsed] ${elapsed}ms'));
+        _aiHistory.add({'role': 'assistant', 'content': content});
+        _safeDisplay(content, isFinal: true);
+        setState(() {
+          _finalizedLines.add(content!);
+          if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
+        });
+      }
     } catch (e) {
-      debugPrint('OpenClaw error: $e');
+      debugPrint('AI error: $e');
     } finally {
       _aiProcessing = false;
     }
@@ -584,6 +706,7 @@ class _G2PageState extends State<G2Page> {
         actions: [
           _serviceIndicator('Whisper', _whisperOnline, _whisperModelLoaded),
           _serviceIndicator('OpenClaw', _openclawOnline, _openclawOnline),
+          _serviceIndicator('Qwen', _qwenOnline, _qwenOnline),
           const SizedBox(width: 8),
           Padding(
             padding: const EdgeInsets.only(right: 16),

@@ -8,6 +8,10 @@ A local AI assistant for Even G2 smart glasses — no Even app required.
 
 ---
 
+### What's New (2026-04-18)
+
+**Dual-model AI routing** — Smart routing between a local Qwen 2.5 7B (fast, runs on your GPU via Ollama) and ChatGPT via OpenClaw (for complex questions with web access). Simple questions get sub-second answers from Qwen; complex ones go to ChatGPT with tool access. Automatic fallback if either fails, and the app debug panel shows which model answered and how long it took.
+
 ### What's New (2026-04-14)
 
 **"Hey Even" AI Assistant** — Full voice assistant flow working locally. Say "Hey Even", ask a question, see the AI response streamed directly to your glasses display. Uses the Dashboard service (0x07) with dual-ear BLE connection, wake word detection, live transcription, and response streaming — all reverse-engineered from the official protocol.
@@ -19,10 +23,13 @@ A local AI assistant for Even G2 smart glasses — no Even app required.
 ## Architecture
 
 ```
-Even G2 Glasses  <--BLE-->  Flutter App  <--WebSocket-->  Voice Service  --> OpenClaw
-   LC3 audio                  bridge                     LC3 + Whisper      ChatGPT
-   display text               + UI                                        SOUL.md
+Even G2 Glasses  <--BLE-->  Flutter App  <--WebSocket-->  Voice Service  (Whisper STT)
+   LC3 audio                  bridge                           |
+   display text               + smart routing ──────┬──> Qwen 2.5 7B (Ollama, local)
+                                                    └──> OpenClaw --> ChatGPT (web)
 ```
+
+The Flutter app routes each question to either Qwen (fast, local, for simple questions) or ChatGPT via OpenClaw (for complex questions with web search). On failure, it automatically falls back to the other model.
 
 ## Components
 
@@ -39,13 +46,15 @@ await g2.mic.start();
 
 ### `app/` — Flutter Desktop App
 
-Bridges the glasses to the voice service:
+Bridges the glasses to the AI pipeline:
 
-- Connects to G2 glasses via BLE
+- Connects to G2 glasses via BLE (dual-ear)
 - Streams LC3 audio to the voice service via WebSocket
-- Displays live transcription (partial + finalized)
-- Sends transcription to the glasses display in real-time
-- Shows Whisper and OpenClaw health indicators
+- Displays live transcription on the glasses (partial + finalized)
+- Routes each question to Qwen (fast/local) or ChatGPT (complex/web)
+- Enforces `[AI]` prefix on every response
+- Shows Whisper, OpenClaw, and Qwen health indicators
+- Debug panel logs which model answered and timing
 
 ### `server/voice/` — Voice Service (Docker)
 
@@ -55,15 +64,22 @@ Real-time speech-to-text with server-side LC3 decoding:
 - **liblc3** decodes G2 glasses audio (16kHz, 32kbps)
 - NVIDIA GPU accelerated (CUDA)
 
-### `server/openclaw/` — AI Brain (Docker)
+### `server/openclaw/` — ChatGPT Brain (Docker)
 
-OpenClaw with ChatGPT Pro subscription via Codex CLI:
+OpenClaw with ChatGPT Pro subscription via Codex CLI. Used for complex questions needing reasoning or web search:
 
-- Receives finalized transcriptions from the voice service
-- **[`server/openclaw/SOUL.md`](server/openclaw/SOUL.md)** defines personality, response style, and when to speak vs stay silent
-- Responses displayed on glasses prefixed with `[AI]`
-- No per-token API costs (uses ChatGPT subscription)
+- Receives finalized transcriptions from the Flutter app
+- **[`server/openclaw/SOUL.md`](server/openclaw/SOUL.md)** defines personality, response style, and when to speak vs stay silent (with web tool access enabled)
 - Health endpoint at `/healthz` on port 18789
+
+### `server/ollama/` — Local LLM (Docker)
+
+Ollama runs Qwen 2.5 7B (~5GB VRAM Q4_K_M) for fast local answers:
+
+- OpenAI-compatible API on port 11434
+- NVIDIA GPU accelerated
+- Used for simple/conversational questions — sub-second responses
+- Zero cost per request
 
 ## Quick Start
 
@@ -75,7 +91,7 @@ OpenClaw with ChatGPT Pro subscription via Codex CLI:
 - NVIDIA GPU with CUDA drivers
 - ChatGPT Pro subscription (for OpenClaw AI responses)
 
-### 1. Build and start the voice service
+### 1. Build and start all services
 
 ```bash
 cd server
@@ -83,11 +99,19 @@ cd server
 # Build base image (first time only, ~15 min)
 docker build -f voice/Dockerfile.base -t even-g2-voice-base ./voice
 
-# Start the voice service
+# Start all services (voice + openclaw + ollama)
 docker compose up -d
 ```
 
-Whisper model downloads on first startup (~1-2 min).
+Whisper model downloads on first startup (~1-2 min). Ollama image pulls automatically.
+
+### 1b. Pull Qwen 2.5 7B into Ollama
+
+```bash
+docker exec even-g2-ollama ollama pull qwen2.5:7b
+```
+
+This is a one-time ~5GB download. Used for fast local answers.
 
 ### 2. Set up OpenClaw (AI brain)
 
@@ -194,7 +218,8 @@ docker compose logs -f     # view live logs
 | Container | Port | Health endpoint | Purpose |
 |---|---|---|---|
 | even-g2-voice | 8081 | `/api/health` | Whisper STT + LC3 decode |
-| openclaw-gateway | 18789 | `/healthz` | AI reasoning (OpenClaw + ChatGPT) |
+| even-g2-openclaw | 18789 | `/healthz` | ChatGPT reasoning + web search |
+| even-g2-ollama | 11434 | `/api/tags` | Qwen 2.5 7B local LLM |
 
 ## Voice Service API
 
@@ -223,7 +248,10 @@ Wake-word activated. Say **"Hey Even"** and the glasses activate the AI listenin
 - [x] Text display (Conversate + Teleprompter + AI cards)
 - [x] Mic streaming (LC3, 16kHz/32kbps/mono)
 - [x] Whisper STT with server-side LC3 decode
-- [x] OpenClaw AI with SOUL.md personality
+- [x] **Local LLM (Qwen 2.5 7B via Ollama) for fast answers**
+- [x] **ChatGPT via OpenClaw for complex questions + web search**
+- [x] **Smart model routing with automatic fallback**
+- [x] **Model + timing indicator in debug panel**
 - [x] Gesture detection (tap, double-tap, scroll, head tilt)
 - [x] EvenHub container system (custom page layouts)
 - [x] AI card display (icons + title + body)
@@ -232,7 +260,6 @@ Wake-word activated. Say **"Hey Even"** and the glasses activate the AI listenin
 
 ### Not Yet Implemented
 - [ ] Speaker diarization
-- [ ] Local LLM support (sub-second latency)
 - [ ] AI response truncation for long answers
 - [ ] IMU data streaming (head tracking)
 - [ ] Notification forwarding (0xC5 whitelist decoded but not used)
