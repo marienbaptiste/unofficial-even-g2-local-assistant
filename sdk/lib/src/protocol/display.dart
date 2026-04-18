@@ -40,9 +40,41 @@ class Display {
     return PacketBuilder.build(seq: seq, serviceHi: 0x0B, serviceLo: 0x20, payload: payload);
   }
 
-  /// Build a Conversate stop packet (type=1, end session).
+  /// Build a Conversate stop/end packet (type=1, f3.f1=2).
+  ///
+  /// Matches Even app capture (2026-04-18 pkt#8678): `080110XX1a0408022000`.
+  /// Ends the Conversate session entirely.
   static Uint8List buildConversateStop(int seq, int msgId) {
-    final field3 = <int>[0x08, 0x02, 0x20, 0x00]; // field1=2 (stop), field4=0
+    final field3 = <int>[0x08, 0x02, 0x20, 0x00]; // f1=2 (stop), f4=0
+    final msgIdVarint = Varint.encode(msgId);
+    final payload = <int>[0x08, 0x01, 0x10, ...msgIdVarint, 0x1A, ...Varint.encode(field3.length), ...field3];
+    return PacketBuilder.build(seq: seq, serviceHi: 0x0B, serviceLo: 0x20, payload: payload);
+  }
+
+  /// Build a Conversate pause packet (type=1, f3.f1=3).
+  ///
+  /// Matches Even app capture (2026-04-18 pkt#7860): `080110XX1a0408032000`.
+  /// Pauses the session without ending it. Mic stops but session stays alive.
+  static Uint8List buildConversatePause(int seq, int msgId) {
+    final field3 = <int>[0x08, 0x03, 0x20, 0x00]; // f1=3 (pause), f4=0
+    final msgIdVarint = Varint.encode(msgId);
+    final payload = <int>[0x08, 0x01, 0x10, ...msgIdVarint, 0x1A, ...Varint.encode(field3.length), ...field3];
+    return PacketBuilder.build(seq: seq, serviceHi: 0x0B, serviceLo: 0x20, payload: payload);
+  }
+
+  /// Build a Conversate continue/resume packet (type=1, f3.f1=4).
+  ///
+  /// Matches Even app capture (2026-04-18 pkt#8232):
+  /// `080110XX1a100804120a080110011800200128002000`.
+  /// Resumes a paused session. Re-sends the display config.
+  static Uint8List buildConversateContinue(int seq, int msgId) {
+    // Same config bytes as buildConversateInit
+    final config = <int>[0x08, 0x01, 0x10, 0x01, 0x18, 0x00, 0x20, 0x01, 0x28, 0x00];
+    final field3 = <int>[
+      0x08, 0x04, // f1=4 (continue)
+      0x12, config.length, ...config, // f2 = config
+      0x20, 0x00, // f4=0
+    ];
     final msgIdVarint = Varint.encode(msgId);
     final payload = <int>[0x08, 0x01, 0x10, ...msgIdVarint, 0x1A, ...Varint.encode(field3.length), ...field3];
     return PacketBuilder.build(seq: seq, serviceHi: 0x0B, serviceLo: 0x20, payload: payload);
@@ -67,11 +99,20 @@ class Display {
   }
 
   /// Icon types for AI response lines.
-  static const int iconAi = 2;       // 📋 AI/document response
-  static const int iconPerson = 3;   // 👤 person
-  static const int iconLocation = 4; // 📍 location (suspected)
-  static const int iconQuestion = 5; // ❓ question (suspected)
-  static const int iconLink = 1;     // 🔗 link/reference (suspected)
+  /// Values confirmed via live testing 2026-04-19 on firmware 2.1.1.12.
+  /// Values 5+ crash the AI card render — do not use.
+  static const int iconDocument = 1; // document icon
+  static const int iconQuestion = 2; // question mark
+  static const int iconPerson = 3;   // person icon
+  static const int iconBulb = 4;     // lightbulb icon
+
+  // Legacy aliases (deprecated — the earlier names were wrong)
+  @Deprecated('Use iconDocument; value 1 is a document icon')
+  static const int iconLink = 1;
+  @Deprecated('Use iconQuestion; value 2 is a question mark')
+  static const int iconAi = 2;
+  @Deprecated('Use iconBulb; value 4 is a lightbulb')
+  static const int iconLocation = 4;
 
   /// Build an AI response card (type=5).
   ///
@@ -117,9 +158,12 @@ class Display {
   }
 
   /// Build a Conversate heartbeat packet.
+  ///
+  /// Matches Even app capture: `0x08 0xFF 0x01 0x10 <msgId> 0x5A 0x00`
+  /// (type=255 varint, msgId, field11=empty bytes).
   static Uint8List buildConversateHeartbeat(int seq, int msgId) {
     final msgIdVarint = Varint.encode(msgId);
-    final payload = <int>[0x08, 0xFF, 0x01, 0x10, ...msgIdVarint];
+    final payload = <int>[0x08, 0xFF, 0x01, 0x10, ...msgIdVarint, 0x5A, 0x00];
     return PacketBuilder.build(seq: seq, serviceHi: 0x0B, serviceLo: 0x20, payload: payload);
   }
 

@@ -691,8 +691,29 @@ class EvenG2 {
 class G2Display {
   final EvenG2 _g2;
   bool _conversateInitSent = false;
+  Timer? _conversateHeartbeatTimer;
+
+  /// Interval between Conversate heartbeat packets. Matches Even app capture (~10s).
+  static const Duration conversateHeartbeatInterval = Duration(seconds: 10);
 
   G2Display._(this._g2);
+
+  void _startConversateHeartbeat() {
+    _conversateHeartbeatTimer?.cancel();
+    _conversateHeartbeatTimer = Timer.periodic(
+      conversateHeartbeatInterval,
+      (_) {
+        if (_g2.isConnected && _conversateInitSent) {
+          heartbeat().catchError((_) {});
+        }
+      },
+    );
+  }
+
+  void _stopConversateHeartbeat() {
+    _conversateHeartbeatTimer?.cancel();
+    _conversateHeartbeatTimer = null;
+  }
 
   /// Display a complete message on the glasses.
   ///
@@ -852,11 +873,53 @@ class G2Display {
   /// await g2.display.stop();
   /// ```
   Future<void> stop() async {
-    _g2._ensureConnected();
-    await _g2._send(Display.buildConversateStop(
-      _g2._nextSeq(), _g2._nextMsgId(),
-    ));
+    _stopConversateHeartbeat();
     _conversateInitSent = false;
+    if (!_g2.isConnected) return;
+    try {
+      await _g2._send(Display.buildConversateStop(
+        _g2._nextSeq(), _g2._nextMsgId(),
+      ));
+    } catch (_) {
+      // BLE may have dropped between isConnected check and write
+    }
+  }
+
+  /// Pause the Conversate session without ending it.
+  ///
+  /// Mic streaming stops but the session stays alive. Call [resume] to continue.
+  /// Matches the Even app's "pause" button behavior.
+  ///
+  /// ```dart
+  /// await g2.display.pause();
+  /// // ... later ...
+  /// await g2.display.resume();
+  /// ```
+  Future<void> pause() async {
+    _stopConversateHeartbeat();
+    if (!_g2.isConnected) return;
+    try {
+      await _g2._send(Display.buildConversatePause(
+        _g2._nextSeq(), _g2._nextMsgId(),
+      ));
+    } catch (_) {}
+  }
+
+  /// Resume a paused Conversate session.
+  ///
+  /// Matches the Even app's "continue" button. Re-sends the display config.
+  ///
+  /// ```dart
+  /// await g2.display.resume();
+  /// ```
+  Future<void> resume() async {
+    if (!_g2.isConnected) return;
+    try {
+      await _g2._send(Display.buildConversateContinue(
+        _g2._nextSeq(), _g2._nextMsgId(),
+      ));
+      _startConversateHeartbeat();
+    } catch (_) {}
   }
 
   /// Keep the display session alive during long pauses.
@@ -887,10 +950,15 @@ class G2Display {
         await Future.delayed(const Duration(milliseconds: 1000));
       }
       _conversateInitSent = true;
+      // Start keepalive heartbeat automatically when a session begins
+      _startConversateHeartbeat();
     }
   }
 
-  void _reset() => _conversateInitSent = false;
+  void _reset() {
+    _conversateInitSent = false;
+    _stopConversateHeartbeat();
+  }
 }
 
 // =============================================================================
@@ -1043,13 +1111,18 @@ class G2Mic {
   /// print('Got ${packets.length} packets');
   /// ```
   Future<List<Uint8List>> stop() async {
+    // Safe to call when not active or disconnected — no-op.
+    if (!_active) return List.from(_recordingBuffer);
     await _recordingSub?.cancel();
     _recordingSub = null;
     await _g2._micSubscription?.cancel();
     _g2._micSubscription = null;
-    await _g2._transport.unsubscribeMic();
+    try {
+      await _g2._transport.unsubscribeMic();
+    } catch (_) {
+      // BLE may have dropped already
+    }
     _active = false;
-
     return List.from(_recordingBuffer);
   }
 

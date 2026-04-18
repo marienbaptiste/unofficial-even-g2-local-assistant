@@ -8,9 +8,9 @@ A local AI assistant for Even G2 smart glasses — no Even app required.
 
 ---
 
-### What's New (2026-04-18)
+### What's New (2026-04-19)
 
-**Dual-model AI routing** — Smart routing between a local Qwen 2.5 7B (fast, runs on your GPU via Ollama) and ChatGPT via OpenClaw (for complex questions with web access). Simple questions get sub-second answers from Qwen; complex ones go to ChatGPT with tool access. Automatic fallback if either fails, and the app debug panel shows which model answered and how long it took.
+**Dual-model AI routing via OpenClaw** — Qwen 2.5 7B runs locally on Ollama and is registered as the **primary** model in OpenClaw. ChatGPT via OpenAI Codex is configured as **fallback #1** for thinking / when Qwen can't handle a request. The Flutter app talks to OpenClaw's single `/v1/chat/completions` endpoint and OpenClaw picks the model — no app-side routing logic needed.
 
 ### What's New (2026-04-14)
 
@@ -25,11 +25,11 @@ A local AI assistant for Even G2 smart glasses — no Even app required.
 ```
 Even G2 Glasses  <--BLE-->  Flutter App  <--WebSocket-->  Voice Service  (Whisper STT)
    LC3 audio                  bridge                           |
-   display text               + smart routing ──────┬──> Qwen 2.5 7B (Ollama, local)
+   display text               + AI card         ──────┬──> Qwen 2.5 7B (Ollama, local)
                                                     └──> OpenClaw --> ChatGPT (web)
 ```
 
-The Flutter app routes each question to either Qwen (fast, local, for simple questions) or ChatGPT via OpenClaw (for complex questions with web search). On failure, it automatically falls back to the other model.
+The Flutter app sends every question to OpenClaw's single `/v1/chat/completions` endpoint. OpenClaw routes internally: Qwen as primary (fast, local), GPT via OpenAI Codex as fallback #1 (when Qwen fails). The glasses display shows both the unaltered conversation response and a dedicated AI card with the model name next to a lightbulb icon.
 
 ## Components
 
@@ -51,9 +51,10 @@ Bridges the glasses to the AI pipeline:
 - Connects to G2 glasses via BLE (dual-ear)
 - Streams LC3 audio to the voice service via WebSocket
 - Displays live transcription on the glasses (partial + finalized)
-- Routes each question to Qwen (fast/local) or ChatGPT (complex/web)
+- Sends every question to OpenClaw (OpenClaw handles model routing internally)
 - Enforces `[AI]` prefix on every response
-- Shows Whisper, OpenClaw, and Qwen health indicators
+- Renders each AI response as both a conversation message and an AI card (lightbulb icon + model name)
+- Shows Whisper and OpenClaw health indicators
 - Debug panel logs which model answered and timing
 
 ### `server/voice/` — Voice Service (Docker)
@@ -112,6 +113,44 @@ docker exec even-g2-ollama ollama pull qwen2.5:7b
 ```
 
 This is a one-time ~5GB download. Used for fast local answers.
+
+### 1c. Configure OpenClaw to use Qwen as primary, ChatGPT as fallback
+
+Edit `~/.openclaw/openclaw.json` (after the OpenClaw onboarding wizard has created it) and merge in these keys:
+
+```json
+{
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "http://even-g2-ollama:11434",
+        "apiKey": "ollama-local",
+        "api": "ollama",
+        "models": [
+          { "id": "qwen2.5:7b", "name": "qwen2.5:7b", "contextWindow": 32768 }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "ollama/qwen2.5:7b",
+        "fallbacks": ["openai-codex/gpt-5.4"]
+      }
+    }
+  }
+}
+```
+
+Then restart OpenClaw:
+
+```bash
+docker compose restart openclaw
+docker exec even-g2-openclaw openclaw models list  # verify
+```
+
+You should see `ollama/qwen2.5:7b` with tag `default` and `openai-codex/gpt-5.4` with tag `fallback#1`.
 
 ### 2. Set up OpenClaw (AI brain)
 

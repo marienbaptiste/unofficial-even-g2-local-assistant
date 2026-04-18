@@ -36,6 +36,7 @@ Thumbs.db
 
 # BLE captures and analysis results (contain personal device traffic)
 reverse-engineering/captures/
+reverse-engineering/tools/captures/
 reverse-engineering/tools/results/
 reverse-engineering/tools/signal.json
 *.log
