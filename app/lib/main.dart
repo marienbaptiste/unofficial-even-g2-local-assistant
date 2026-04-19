@@ -418,19 +418,11 @@ class _G2PageState extends State<G2Page> {
       if (content != null && content != '[SILENT]' && !content.contains('[SILENT]')) {
         setState(() => _debugLines.add('[$modelUsed] ${elapsed}ms'));
         _aiHistory.add({'role': 'assistant', 'content': content});
-        // 1. Send the conversation text (awaited so ordering is guaranteed)
-        try {
-          await _g2.display.showFinal(content);
-        } catch (e) {
-          debugPrint('Display showFinal failed: $e');
-        }
-        _lastDisplayUpdate = DateTime.now();
-        // 2. Send the AI card — lightbulb icon + model name as the visible title
+        _safeDisplay(content, isFinal: true);
         try {
           await _g2.display.showAiResponse(
             icon: Display.iconBulb,
-            title: modelUsed,
-            body: '',
+            message: '$modelUsed ${elapsed}ms',
             isDone: true,
           );
         } catch (e) {
@@ -608,18 +600,18 @@ class _G2PageState extends State<G2Page> {
   Future<void> _testAiCards() async {
     try {
       setState(() => _status = 'Sending AI cards...');
-      // Send multiple AI response lines with different icons — like the Even tutorial
+      // Send multiple AI response lines with different icons — stack up to 4
       await _g2.display.showAiResponse(
-        icon: Display.iconLink, title: 'Meeting Summary', body: 'Q2 planning session', isDone: false);
+        icon: Display.iconDocument, message: 'Meeting Summary', isDone: false);
       await Future.delayed(const Duration(milliseconds: 200));
       await _g2.display.showAiResponse(
-        icon: Display.iconPerson, title: 'Participants', body: 'Alice, Bob, Charlie', isDone: false);
+        icon: Display.iconPerson, message: 'Alice, Bob, Charlie', isDone: false);
       await Future.delayed(const Duration(milliseconds: 200));
       await _g2.display.showAiResponse(
-        icon: Display.iconAi, title: 'Key Decision', body: 'Launch date moved to Q3', isDone: false);
+        icon: Display.iconQuestion, message: 'Launch moved to Q3', isDone: false);
       await Future.delayed(const Duration(milliseconds: 200));
       await _g2.display.showAiResponse(
-        icon: Display.iconPerson, title: 'Action Item', body: 'Alice to prepare deck by Friday', isDone: true);
+        icon: Display.iconBulb, message: 'Alice: deck by Friday', isDone: true);
       setState(() => _status = 'AI cards sent!');
     } catch (e) {
       setState(() => _status = 'AI card error: $e');

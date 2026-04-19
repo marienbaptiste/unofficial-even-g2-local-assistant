@@ -116,25 +116,22 @@ class Display {
 
   /// Build an AI response card (type=5).
   ///
-  /// Shows a titled line on the glasses display with an icon.
-  /// Send multiple cards rapidly to create a multi-line display.
+  /// Shows a line on the glasses display with an icon and a message.
+  /// Send multiple cards rapidly to stack them (up to 4).
   ///
-  /// [icon] - Icon type: Display.iconAi, Display.iconPerson, etc.
-  /// [title] - Bold header text
-  /// [body] - Detail text (shown below title)
+  /// [icon] - Icon type: Display.iconBulb, Display.iconPerson, etc.
+  /// [message] - The text shown on the card
   /// [isDone] - false while streaming, true for final
   static Uint8List buildAiResponse(int seq, int msgId, {
     int icon = 2,
-    required String title,
-    required String body,
+    required String message,
     bool isDone = true,
   }) {
-    final titleBytes = utf8.encode(title);
-    final bodyBytes = utf8.encode(body);
+    final msgBytes = utf8.encode(message);
     final field7 = <int>[
       0x08, ...Varint.encode(icon), // field1 = icon type
-      0x12, ...Varint.encode(titleBytes.length), ...titleBytes, // field2 = title
-      0x1A, ...Varint.encode(bodyBytes.length), ...bodyBytes, // field3 = body
+      0x12, ...Varint.encode(msgBytes.length), ...msgBytes, // field2 (renders on glasses)
+      0x1A, ...Varint.encode(msgBytes.length), ...msgBytes, // field3 (glasses require non-empty — mirror msg)
       0x20, isDone ? 0x01 : 0x00, // field4 = done flag
     ];
     final msgIdVarint = Varint.encode(msgId);

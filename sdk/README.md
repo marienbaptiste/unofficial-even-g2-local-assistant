@@ -84,15 +84,13 @@ Rich card format with icons, used by the Even AI interface.
 
 ```dart
 await g2.display.showAiResponse(
-  icon: Display.iconAi,
-  title: 'Weather',
-  body: 'Sunny, 22C in Geneva',
+  icon: Display.iconBulb,
+  message: 'Sunny, 22C in Geneva',
   isDone: false,
 );
 await g2.display.showAiResponse(
   icon: Display.iconPerson,
-  title: 'Reminder',
-  body: 'Meeting at 3pm',
+  message: 'Meeting at 3pm',
   isDone: true,  // marks end of card sequence
 );
 ```

@@ -106,7 +106,7 @@ class _TestTabState extends State<TestTab> {
             _btn('Show Final', () => _run('final', () => g2.display.showFinal(_textCtrl.text)), connected),
             _btn('Clear', () => _run('clear', () => g2.display.clear()), connected),
             _btn('AI Card', () => _run('ai-card', () => g2.display.showAiResponse(
-              title: 'Test Card', body: _textCtrl.text, icon: Display.iconAi,
+              message: _textCtrl.text, icon: Display.iconBulb,
             )), connected),
             _btn('User Prompt', () => _run('prompt', () => g2.display.showUserPrompt(_textCtrl.text)), connected),
             _btn('Teleprompter', () => _run('teleprompter', () => g2.display.teleprompter(

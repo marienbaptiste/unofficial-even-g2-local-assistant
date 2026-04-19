@@ -824,28 +824,26 @@ class G2Display {
     }
   }
 
-  /// Display an AI response with a title and body.
+  /// Display an AI response card with an icon and a message.
   ///
-  /// Shows a formatted card on the glasses with a bold title and body text.
-  /// Use [isDone] = false while streaming the response, then send the final
-  /// version with [isDone] = true.
+  /// Cards stack on the glasses (up to 4). Use [isDone] = false while
+  /// streaming, then send the final card with [isDone] = true.
   ///
   /// ```dart
   /// await g2.display.showAiResponse(
-  ///   title: "Weather in Geneva",
-  ///   body: "Currently 18°C, partly cloudy. High of 22°C expected.",
+  ///   icon: Display.iconBulb,
+  ///   message: "qwen2.5:7b 842ms",
   /// );
   /// ```
   Future<void> showAiResponse({
-    required String title,
-    required String body,
-    int icon = Display.iconAi,
+    required String message,
+    int icon = Display.iconBulb,
     bool isDone = true,
   }) async {
     await _initConversate();
     await _g2._send(Display.buildAiResponse(
       _g2._nextSeq(), _g2._nextMsgId(),
-      icon: icon, title: title, body: body, isDone: isDone,
+      icon: icon, message: message, isDone: isDone,
     ));
   }
 
