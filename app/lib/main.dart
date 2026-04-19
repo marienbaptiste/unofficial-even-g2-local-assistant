@@ -425,7 +425,7 @@ class _G2PageState extends State<G2Page> {
           debugPrint('Display showFinal failed: $e');
         }
         _lastDisplayUpdate = DateTime.now();
-        // 2. Send the AI card with lightbulb icon + model name (appears after)
+        // 2. Send the AI card — lightbulb icon + model name as the visible title
         try {
           await _g2.display.showAiResponse(
             icon: Display.iconBulb,
