@@ -407,16 +407,15 @@ class _G2PageState extends State<G2Page> {
       final result = await _askOpenClaw(messages, timeout: const Duration(seconds: 60));
       final elapsed = DateTime.now().difference(startTime).inMilliseconds;
 
-      String? content = result?.content;
+      final content = result?.content;
       final modelUsed = result?.model ?? 'none';
 
-      // Enforce [AI] prefix (models sometimes forget)
-      if (content != null && !content.trimLeft().startsWith('[AI]')) {
-        content = '[AI] ${content.trimLeft()}';
-      }
-
-      if (content != null && content != '[SILENT]' && !content.contains('[SILENT]')) {
-        setState(() => _debugLines.add('[$modelUsed] ${elapsed}ms'));
+      if (content != null && content.isNotEmpty) {
+        setState(() {
+          _debugLines.add('[$modelUsed] ${elapsed}ms');
+          _finalizedLines.add(content);
+          if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
+        });
         _aiHistory.add({'role': 'assistant', 'content': content});
         _safeDisplay(content, isFinal: true);
         try {
@@ -428,12 +427,6 @@ class _G2PageState extends State<G2Page> {
         } catch (e) {
           debugPrint('AI card failed: $e');
         }
-        setState(() {
-          _finalizedLines.add(content!);
-          if (_finalizedLines.length > 200) _finalizedLines.removeAt(0);
-        });
-      } else {
-        setState(() => _debugLines.add('[$modelUsed] silent (${elapsed}ms): ${content ?? "null"}'));
       }
     } catch (e) {
       debugPrint('AI error: $e');
