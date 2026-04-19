@@ -418,8 +418,14 @@ class _G2PageState extends State<G2Page> {
       if (content != null && content != '[SILENT]' && !content.contains('[SILENT]')) {
         setState(() => _debugLines.add('[$modelUsed] ${elapsed}ms'));
         _aiHistory.add({'role': 'assistant', 'content': content});
-        _safeDisplay(content, isFinal: true);
-        // AI card showing which model answered (lightbulb icon)
+        // 1. Send the conversation text (awaited so ordering is guaranteed)
+        try {
+          await _g2.display.showFinal(content);
+        } catch (e) {
+          debugPrint('Display showFinal failed: $e');
+        }
+        _lastDisplayUpdate = DateTime.now();
+        // 2. Send the AI card with lightbulb icon + model name (appears after)
         try {
           await _g2.display.showAiResponse(
             icon: Display.iconBulb,

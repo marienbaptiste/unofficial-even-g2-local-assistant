@@ -3,6 +3,7 @@ services:
     build:
       context: ./voice
       dockerfile: Dockerfile
+    image: even-g2-voice:latest
     container_name: even-g2-voice
     ports:
       - "8081:8081"
@@ -22,7 +23,7 @@ services:
     restart: unless-stopped
 
   openclaw:
-    image: ghcr.io/openclaw/openclaw:latest
+    image: even-g2-openclaw:latest
     container_name: even-g2-openclaw
     ports:
       - "18789:18789"
@@ -46,7 +47,7 @@ services:
       start_period: 20s
 
   ollama:
-    image: ollama/ollama:latest
+    image: even-g2-ollama:latest
     container_name: even-g2-ollama
     ports:
       - "11434:11434"
@@ -59,6 +60,18 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    restart: unless-stopped
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: even-g2-searxng
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+      - INSTANCE_NAME=even-g2
     restart: unless-stopped
 
 volumes:

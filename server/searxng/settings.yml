@@ -1,0 +1,26 @@
+# SearxNG config for OpenClaw web search
+# Enables JSON output which OpenClaw's web_search tool requires.
+
+use_default_settings: true
+
+general:
+  instance_name: "even-g2"
+  debug: false
+
+server:
+  secret_key: "even-g2-searxng-local-secret-change-me"
+  limiter: false
+  image_proxy: false
+  bind_address: "0.0.0.0"
+  port: 8080
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: ""
+  formats:
+    - html
+    - json
+
+ui:
+  static_use_hash: true
